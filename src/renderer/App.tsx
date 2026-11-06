@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { api } from './api';
 import type { AppSettings } from '../shared/types';
 import Dashboard from './pages/Dashboard';
@@ -7,6 +7,8 @@ import BolForm from './pages/BolForm';
 import Catalogs from './pages/Catalogs';
 import Settings from './pages/Settings';
 import SetupWizard from './pages/SetupWizard';
+import Inventory from './pages/Inventory';
+const Warehouse3D = lazy(() => import('./pages/Warehouse3D'));
 
 export type View =
   | { name: 'dashboard' }
@@ -14,6 +16,8 @@ export type View =
   | { name: 'bol-new'; template?: string }
   | { name: 'bol-edit'; id: number }
   | { name: 'catalogs' }
+  | { name: 'inventory' }
+  | { name: 'warehouse3d' }
   | { name: 'settings' };
 
 export default function App() {
@@ -79,6 +83,8 @@ export default function App() {
         {nav({ name: 'dashboard' }, 'Dashboard')}
         {nav({ name: 'bols' }, 'Bills of Lading')}
         {nav({ name: 'catalogs' }, 'Catalogs')}
+        {nav({ name: 'inventory' }, 'Inventory')}
+        {nav({ name: 'warehouse3d' }, '3D Warehouse')}
         {nav({ name: 'settings' }, 'Settings')}
         <div className="spacer" />
         <button className="theme-toggle" onClick={toggleTheme}>
@@ -95,6 +101,12 @@ export default function App() {
           <BolForm bolId={view.id} onDone={() => setView({ name: 'bols' })} onCancel={() => setView({ name: 'bols' })} />
         )}
         {view.name === 'catalogs' && <Catalogs />}
+        {view.name === 'inventory' && <Inventory />}
+        {view.name === 'warehouse3d' && (
+          <Suspense fallback={<div className="main"><p className="muted">Loading 3D view…</p></div>}>
+            <Warehouse3D />
+          </Suspense>
+        )}
         {view.name === 'settings' && <Settings settings={settings} onSaved={setSettings} />}
       </main>
     </div>
