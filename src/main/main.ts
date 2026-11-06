@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, dialog } from 'electron';
 import path from 'node:path';
 import { Store } from './db';
 import { registerIpc } from './ipc';
@@ -38,7 +38,18 @@ function createWindow() {
 app.whenReady().then(() => {
   // Data lives in the persistent per-user location, never in the install dir.
   const userData = app.getPath('userData');
-  store = new Store(path.join(userData, 'logistics-studio.db'));
+  try {
+    store = new Store(path.join(userData, 'logistics-studio.db'));
+  } catch (err) {
+    // A native-module ABI mismatch (better-sqlite3) or a corrupt DB must not
+    // crash silently: show the error and quit.
+    dialog.showErrorBox(
+      'Logistics Studio could not start',
+      `The local database could not be opened:\n${err instanceof Error ? err.message : String(err)}\n\nIf this mentions a Node.js version mismatch, reinstall dependencies with:\n  npm install\nwhich rebuilds the native database module for Electron (postinstall).`,
+    );
+    app.quit();
+    return;
+  }
   registerIpc(store, () => mainWindow);
   createWindow();
 
