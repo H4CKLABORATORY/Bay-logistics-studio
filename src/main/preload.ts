@@ -25,6 +25,23 @@ const api = {
   templatesUpdate: (key: string, patch: unknown) => ipcRenderer.invoke('templates:update', key, patch),
   backupExport: () => ipcRenderer.invoke('backup:export'),
   backupRestore: () => ipcRenderer.invoke('backup:restore'),
+  // Warehouses + inventory (Phases 4-5)
+  warehouseList: () => ipcRenderer.invoke('warehouse:list'),
+  warehouseCreate: (w: unknown) => ipcRenderer.invoke('warehouse:create', w),
+  warehouseUpdateDims: (id: number, w: unknown) => ipcRenderer.invoke('warehouse:update-dims', id, w),
+  inventoryLocations: (warehouseId?: number) => ipcRenderer.invoke('inventory:locations', warehouseId),
+  inventoryLocationCreate: (loc: unknown) => ipcRenderer.invoke('inventory:location-create', loc),
+  inventoryItems: (search?: string) => ipcRenderer.invoke('inventory:items', search),
+  inventoryItemCreate: (it: unknown) => ipcRenderer.invoke('inventory:item-create', it),
+  inventoryStock: (locationId?: number) => ipcRenderer.invoke('inventory:stock', locationId),
+  inventoryMovementCreate: (m: unknown) => ipcRenderer.invoke('inventory:movement-create', m),
+  inventoryMovements: (limit?: number) => ipcRenderer.invoke('inventory:movements', limit),
+  inventorySearch: (query: string) => ipcRenderer.invoke('inventory:search', query),
+  inventoryHistory: (limit?: number) => ipcRenderer.invoke('inventory:history', limit),
+  inventoryPallets: () => ipcRenderer.invoke('inventory:pallets'),
+  inventoryPalletCreate: (code: string, locationId: number | null, x: number, y: number, z: number) => ipcRenderer.invoke('inventory:pallet-create', code, locationId, x, y, z),
+  inventoryBoxes: () => ipcRenderer.invoke('inventory:boxes'),
+  inventoryBoxCreate: (code: string, palletId: number | null, locationId: number | null, x: number, y: number, z: number) => ipcRenderer.invoke('inventory:box-create', code, palletId, locationId, x, y, z),
 };
 
 export type Api = typeof api;

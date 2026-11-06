@@ -7,9 +7,12 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
-import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord } from '../shared/types';
+import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvMovementType, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
 import { DEFAULT_SETTINGS } from '../shared/types';
 import { BASE_TEMPLATES } from '../shared/templates';
+import { DEFAULT_WAREHOUSE_DIMS } from '../shared/warehouse3d';
+
+export const INVENTORY_TABLES = ['warehouses', 'inv_locations', 'inv_items', 'inv_pallets', 'inv_boxes', 'inv_stock', 'inv_movements', 'inv_history'];
 
 export const CATALOG_TABLES: Record<CatalogKind, { columns: string[]; create: string }> = {
   companies: {
@@ -92,6 +95,56 @@ const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS bol_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT, bol_id INTEGER NOT NULL, bol_number TEXT NOT NULL,
     action TEXT NOT NULL, detail TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')))`,
+  // ---- Inventory (Phase 4) ----
+  `CREATE TABLE IF NOT EXISTS warehouses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
+    width_m REAL NOT NULL DEFAULT 30, depth_m REAL NOT NULL DEFAULT 20, height_m REAL NOT NULL DEFAULT 6,
+    created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS inv_locations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, warehouse_id INTEGER NOT NULL,
+    code TEXT NOT NULL UNIQUE, zone TEXT NOT NULL, aisle INTEGER NOT NULL, shelf INTEGER NOT NULL,
+    position INTEGER NOT NULL, x REAL NOT NULL DEFAULT 0, y REAL NOT NULL DEFAULT 0, z REAL NOT NULL DEFAULT 0,
+    capacity INTEGER NOT NULL DEFAULT 0, created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (warehouse_id) REFERENCES warehouses(id))`,
+  `CREATE TABLE IF NOT EXISTS inv_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, sku TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+    description TEXT DEFAULT '', unit TEXT DEFAULT '', weight TEXT DEFAULT '',
+    customer TEXT DEFAULT '', project TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE TABLE IF NOT EXISTS inv_pallets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE,
+    location_id INTEGER, x REAL NOT NULL DEFAULT 0, y REAL NOT NULL DEFAULT 0, z REAL NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')), FOREIGN KEY (location_id) REFERENCES inv_locations(id))`,
+  `CREATE TABLE IF NOT EXISTS inv_boxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE,
+    pallet_id INTEGER, location_id INTEGER,
+    x REAL NOT NULL DEFAULT 0, y REAL NOT NULL DEFAULT 0, z REAL NOT NULL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (pallet_id) REFERENCES inv_pallets(id), FOREIGN KEY (location_id) REFERENCES inv_locations(id))`,
+  `CREATE TABLE IF NOT EXISTS inv_stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL, location_id INTEGER NOT NULL,
+    pallet_id INTEGER NOT NULL DEFAULT 0, box_id INTEGER NOT NULL DEFAULT 0,
+    quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE (item_id, location_id, pallet_id, box_id),
+    FOREIGN KEY (item_id) REFERENCES inv_items(id), FOREIGN KEY (location_id) REFERENCES inv_locations(id))`,
+  `CREATE TABLE IF NOT EXISTS inv_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL CHECK (type IN ('entry','exit','move')),
+    item_id INTEGER NOT NULL, quantity INTEGER NOT NULL CHECK (quantity > 0),
+    from_location_id INTEGER, to_location_id INTEGER, bol_id INTEGER,
+    rr_number TEXT DEFAULT '', user TEXT DEFAULT '', note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (item_id) REFERENCES inv_items(id),
+    FOREIGN KEY (from_location_id) REFERENCES inv_locations(id),
+    FOREIGN KEY (to_location_id) REFERENCES inv_locations(id),
+    FOREIGN KEY (bol_id) REFERENCES bol_documents(id))`,
+  `CREATE TABLE IF NOT EXISTS inv_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL,
+    action TEXT NOT NULL, detail TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')))`,
+  `CREATE INDEX IF NOT EXISTS idx_inv_stock_item ON inv_stock(item_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_inv_stock_location ON inv_stock(location_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_inv_movements_bol ON inv_movements(bol_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_inv_movements_rr ON inv_movements(rr_number)`,
+  `CREATE INDEX IF NOT EXISTS idx_bol_items_rr ON bol_items(rr_number)`,
   ...Object.values(CATALOG_TABLES).map((t) => t.create),
 ];
 
@@ -110,7 +163,7 @@ export class Store {
   private migrate() {
     const run = this.db.transaction(() => {
       for (const sql of MIGRATIONS) this.db.exec(sql);
-      this.db.prepare(`INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1')`).run();
+      this.db.prepare(`INSERT INTO meta (key, value) VALUES ('schema_version', '2') ON CONFLICT(key) DO UPDATE SET value = '2'`).run();
     });
     run();
   }
@@ -128,6 +181,26 @@ export class Store {
       );
     }
     this.db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES ('app', ?)`).run(JSON.stringify(DEFAULT_SETTINGS));
+    // Default warehouse (Phase 4/5) + a small starter location grid so the
+    // 3D map has real rows on a fresh database. INSERT OR IGNORE: safe on upgrade.
+    const wh = this.db.prepare(`INSERT OR IGNORE INTO warehouses (name, width_m, depth_m, height_m) VALUES (?, ?, ?, ?)`)
+      .run('Main Warehouse', DEFAULT_WAREHOUSE_DIMS.widthM, DEFAULT_WAREHOUSE_DIMS.depthM, DEFAULT_WAREHOUSE_DIMS.heightM);
+    const whRow = this.db.prepare(`SELECT id FROM warehouses WHERE name = 'Main Warehouse'`).get() as { id: number } | undefined;
+    const whId = whRow?.id ?? Number(wh.lastInsertRowid);
+    if (whId) {
+      const insLoc = this.db.prepare(
+        `INSERT OR IGNORE INTO inv_locations (warehouse_id, code, zone, aisle, shelf, position, x, y, z, capacity)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 100)`,
+      );
+      for (const aisle of [1, 2]) {
+        for (const shelf of [1, 2]) {
+          for (const pos of [1, 2, 3]) {
+            insLoc.run(whId, `A-${String(aisle).padStart(2, '0')}-${String(shelf).padStart(2, '0')}-${String(pos).padStart(2, '0')}`,
+              'A', aisle, shelf, pos, 2 + aisle * 4, 0.6 + shelf * 1.2, 2 + pos * 2);
+          }
+        }
+      }
+    }
   }
 
   // ---- Settings ----
@@ -349,28 +422,303 @@ export class Store {
     );
   }
 
+  // ---- Inventory (Phase 4) ----
+  // All queries parameterized; moves run in a single transaction so a
+  // decrement, an increment, the movement row and the audit row are atomic.
+  listWarehouses(): Warehouse[] {
+    const rows = this.db.prepare(`SELECT * FROM warehouses ORDER BY id ASC`).all() as Record<string, unknown>[];
+    return rows.map((r) => ({ id: r.id as number, name: String(r.name), widthM: r.width_m as number, depthM: r.depth_m as number, heightM: r.height_m as number, createdAt: String(r.created_at ?? '') }));
+  }
+
+  getWarehouse(id: number): Warehouse | null {
+    const r = this.db.prepare(`SELECT * FROM warehouses WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return r ? { id: r.id as number, name: String(r.name), widthM: r.width_m as number, depthM: r.depth_m as number, heightM: r.height_m as number, createdAt: String(r.created_at ?? '') } : null;
+  }
+
+  createWarehouse(name: string, widthM: number, depthM: number, heightM: number): Warehouse {
+    const info = this.db.prepare(`INSERT INTO warehouses (name, width_m, depth_m, height_m) VALUES (?, ?, ?, ?)`).run(name, widthM, depthM, heightM);
+    const w = this.getWarehouse(Number(info.lastInsertRowid));
+    if (!w) throw new Error('Failed to read back warehouse');
+    return w;
+  }
+
+  updateWarehouse(id: number, widthM: number, depthM: number, heightM: number): Warehouse {
+    const existing = this.getWarehouse(id);
+    if (!existing) throw new Error(`Warehouse id ${id} not found`);
+    this.db.prepare(`UPDATE warehouses SET width_m = ?, depth_m = ?, height_m = ? WHERE id = ?`).run(widthM, depthM, heightM, id);
+    const w = this.getWarehouse(id);
+    if (!w) throw new Error('Failed to read back warehouse');
+    return w;
+  }
+
+  private rowToLocation(r: Record<string, unknown>): InvLocation {
+    return { id: r.id as number, warehouseId: r.warehouse_id as number, code: String(r.code), zone: String(r.zone), aisle: r.aisle as number, shelf: r.shelf as number, position: r.position as number, x: r.x as number, y: r.y as number, z: r.z as number, capacity: r.capacity as number, createdAt: String(r.created_at ?? '') };
+  }
+
+  listLocations(warehouseId?: number): InvLocation[] {
+    const rows = (warehouseId
+      ? this.db.prepare(`SELECT * FROM inv_locations WHERE warehouse_id = ? ORDER BY code ASC`).all(warehouseId)
+      : this.db.prepare(`SELECT * FROM inv_locations ORDER BY code ASC`).all()) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToLocation(r));
+  }
+
+  listLocationsWithStock(warehouseId?: number): Array<InvLocation & { stockQty: number }> {
+    const locs = this.listLocations(warehouseId);
+    return locs.map((l) => {
+      const row = this.db.prepare(`SELECT COALESCE(SUM(quantity), 0) AS qty FROM inv_stock WHERE location_id = ?`).get(l.id) as { qty: number };
+      return { ...l, stockQty: row.qty };
+    });
+  }
+
+  getLocation(id: number): InvLocation | null {
+    const r = this.db.prepare(`SELECT * FROM inv_locations WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToLocation(r) : null;
+  }
+
+  getLocationByCode(code: string): InvLocation | null {
+    const r = this.db.prepare(`SELECT * FROM inv_locations WHERE code = ?`).get(code) as Record<string, unknown> | undefined;
+    return r ? this.rowToLocation(r) : null;
+  }
+
+  createLocation(loc: Omit<InvLocation, 'id' | 'createdAt'>): InvLocation {
+    const info = this.db.prepare(
+      `INSERT INTO inv_locations (warehouse_id, code, zone, aisle, shelf, position, x, y, z, capacity)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(loc.warehouseId, loc.code, loc.zone, loc.aisle, loc.shelf, loc.position, loc.x, loc.y, loc.z, loc.capacity ?? 0);
+    const created = this.getLocation(Number(info.lastInsertRowid));
+    if (!created) throw new Error('Failed to read back location');
+    this.logInvHistory('location', created.id!, 'created', `Location ${created.code} created.`);
+    return created;
+  }
+
+  private rowToInvItem(r: Record<string, unknown>): InvItem {
+    return { id: r.id as number, sku: String(r.sku), name: String(r.name), description: String(r.description ?? ''), unit: String(r.unit ?? ''), weight: String(r.weight ?? ''), customer: String(r.customer ?? ''), project: String(r.project ?? ''), createdAt: String(r.created_at ?? '') };
+  }
+
+  listInvItems(search = ''): InvItem[] {
+    const q = `%${search}%`;
+    const rows = (search
+      ? this.db.prepare(`SELECT * FROM inv_items WHERE sku LIKE ? OR name LIKE ? OR customer LIKE ? OR project LIKE ? ORDER BY name ASC`).all(q, q, q, q)
+      : this.db.prepare(`SELECT * FROM inv_items ORDER BY name ASC`).all()) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToInvItem(r));
+  }
+
+  getInvItem(id: number): InvItem | null {
+    const r = this.db.prepare(`SELECT * FROM inv_items WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return r ? this.rowToInvItem(r) : null;
+  }
+
+  createInvItem(it: Omit<InvItem, 'id' | 'createdAt'>): InvItem {
+    const info = this.db.prepare(
+      `INSERT INTO inv_items (sku, name, description, unit, weight, customer, project) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(it.sku, it.name, it.description ?? '', it.unit ?? '', it.weight ?? '', it.customer ?? '', it.project ?? '');
+    const created = this.getInvItem(Number(info.lastInsertRowid));
+    if (!created) throw new Error('Failed to read back inventory item');
+    return created;
+  }
+
+  listPallets(): InvPallet[] {
+    const rows = this.db.prepare(`SELECT * FROM inv_pallets ORDER BY code ASC`).all() as Record<string, unknown>[];
+    return rows.map((r) => ({ id: r.id as number, code: String(r.code), locationId: (r.location_id as number | null) ?? null, x: r.x as number, y: r.y as number, z: r.z as number, createdAt: String(r.created_at ?? '') }));
+  }
+
+  createPallet(code: string, locationId: number | null, x: number, y: number, z: number): InvPallet {
+    const info = this.db.prepare(`INSERT INTO inv_pallets (code, location_id, x, y, z) VALUES (?, ?, ?, ?, ?)`).run(code, locationId, x, y, z);
+    const row = this.db.prepare(`SELECT * FROM inv_pallets WHERE id = ?`).get(Number(info.lastInsertRowid)) as Record<string, unknown>;
+    return { id: row.id as number, code: String(row.code), locationId: (row.location_id as number | null) ?? null, x: row.x as number, y: row.y as number, z: row.z as number };
+  }
+
+  listBoxes(): InvBox[] {
+    const rows = this.db.prepare(`SELECT * FROM inv_boxes ORDER BY code ASC`).all() as Record<string, unknown>[];
+    return rows.map((r) => ({ id: r.id as number, code: String(r.code), palletId: (r.pallet_id as number | null) ?? null, locationId: (r.location_id as number | null) ?? null, x: r.x as number, y: r.y as number, z: r.z as number, createdAt: String(r.created_at ?? '') }));
+  }
+
+  createBox(code: string, palletId: number | null, locationId: number | null, x: number, y: number, z: number): InvBox {
+    const info = this.db.prepare(`INSERT INTO inv_boxes (code, pallet_id, location_id, x, y, z) VALUES (?, ?, ?, ?, ?, ?)`).run(code, palletId, locationId, x, y, z);
+    const row = this.db.prepare(`SELECT * FROM inv_boxes WHERE id = ?`).get(Number(info.lastInsertRowid)) as Record<string, unknown>;
+    return { id: row.id as number, code: String(row.code), palletId: (row.pallet_id as number | null) ?? null, locationId: (row.location_id as number | null) ?? null, x: row.x as number, y: row.y as number, z: row.z as number };
+  }
+
+  getStockQty(itemId: number, locationId: number, palletId = 0, boxId = 0): number {
+    const row = this.db.prepare(`SELECT quantity FROM inv_stock WHERE item_id = ? AND location_id = ? AND pallet_id = ? AND box_id = ?`).get(itemId, locationId, palletId, boxId) as { quantity: number } | undefined;
+    return row?.quantity ?? 0;
+  }
+
+  listStock(locationId?: number): InvStockRow[] {
+    const rows = (locationId
+      ? this.db.prepare(
+          `SELECT s.*, i.sku, i.name AS item_name, l.code AS location_code FROM inv_stock s
+           JOIN inv_items i ON i.id = s.item_id JOIN inv_locations l ON l.id = s.location_id
+           WHERE s.location_id = ? AND s.quantity > 0 ORDER BY l.code ASC, i.name ASC`,
+        ).all(locationId)
+      : this.db.prepare(
+          `SELECT s.*, i.sku, i.name AS item_name, l.code AS location_code FROM inv_stock s
+           JOIN inv_items i ON i.id = s.item_id JOIN inv_locations l ON l.id = s.location_id
+           WHERE s.quantity > 0 ORDER BY l.code ASC, i.name ASC`,
+        ).all()) as Record<string, unknown>[];
+    return rows.map((r) => ({ id: r.id as number, itemId: r.item_id as number, sku: String(r.sku), itemName: String(r.item_name), locationId: r.location_id as number, locationCode: String(r.location_code), palletId: r.pallet_id as number, boxId: r.box_id as number, quantity: r.quantity as number }));
+  }
+
+  private adjustStock(itemId: number, locationId: number, palletId: number, boxId: number, delta: number) {
+    if (delta === 0) return;
+    const cur = this.getStockQty(itemId, locationId, palletId, boxId);
+    const next = cur + delta;
+    if (next < 0) throw new Error('Insufficient stock at the source location.');
+    if (cur === 0 && next > 0) {
+      this.db.prepare(`INSERT INTO inv_stock (item_id, location_id, pallet_id, box_id, quantity) VALUES (?, ?, ?, ?, ?)`).run(itemId, locationId, palletId, boxId, next);
+    } else {
+      this.db.prepare(`UPDATE inv_stock SET quantity = ? WHERE item_id = ? AND location_id = ? AND pallet_id = ? AND box_id = ?`).run(next, itemId, locationId, palletId, boxId);
+    }
+  }
+
+  private logInvHistory(entityType: string, entityId: number, action: string, detail: string) {
+    this.db.prepare(`INSERT INTO inv_history (entity_type, entity_id, action, detail) VALUES (?, ?, ?, ?)`).run(entityType, entityId, action, detail);
+  }
+
+  recordMovement(m: { type: InvMovementType; itemId: number; quantity: number; fromLocationId?: number | null; toLocationId?: number | null; bolId?: number | null; rrNumber?: string; user?: string; note?: string }): InvMovement {
+    const item = this.getInvItem(m.itemId);
+    if (!item) throw new Error(`Inventory item id ${m.itemId} not found`);
+    if (m.bolId) {
+      const bol = this.getBol(m.bolId);
+      if (!bol) throw new Error(`BOL id ${m.bolId} not found`);
+    }
+    if (m.fromLocationId) {
+      const from = this.getLocation(m.fromLocationId);
+      if (!from) throw new Error(`Source location id ${m.fromLocationId} not found`);
+    }
+    if (m.toLocationId) {
+      const to = this.getLocation(m.toLocationId);
+      if (!to) throw new Error(`Destination location id ${m.toLocationId} not found`);
+    }
+    if (m.type !== 'entry' && m.fromLocationId) {
+      const available = this.getStockQty(m.itemId, m.fromLocationId);
+      if (available < m.quantity) {
+        throw new Error(`Insufficient stock at the source location: have ${available}, need ${m.quantity}.`);
+      }
+    }
+    const run = this.db.transaction(() => {
+      if (m.type === 'entry' && m.toLocationId) this.adjustStock(m.itemId, m.toLocationId, 0, 0, m.quantity);
+      if (m.type === 'exit' && m.fromLocationId) this.adjustStock(m.itemId, m.fromLocationId, 0, 0, -m.quantity);
+      if (m.type === 'move' && m.fromLocationId && m.toLocationId) {
+        this.adjustStock(m.itemId, m.fromLocationId, 0, 0, -m.quantity);
+        this.adjustStock(m.itemId, m.toLocationId, 0, 0, m.quantity);
+      }
+      const info = this.db.prepare(
+        `INSERT INTO inv_movements (type, item_id, quantity, from_location_id, to_location_id, bol_id, rr_number, user, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(m.type, m.itemId, m.quantity, m.fromLocationId ?? null, m.toLocationId ?? null, m.bolId ?? null, m.rrNumber ?? '', m.user ?? '', m.note ?? '');
+      const id = Number(info.lastInsertRowid);
+      const bol = m.bolId ? this.getBol(m.bolId) : null;
+      this.logInvHistory('movement', id, m.type,
+        `${m.type} ${m.quantity} x ${item.sku} (${item.name})` +
+        (m.fromLocationId ? ` from location ${m.fromLocationId}` : '') +
+        (m.toLocationId ? ` to location ${m.toLocationId}` : '') +
+        (bol ? ` — BOL ${bol.bolNumber}` : '') +
+        (m.rrNumber ? ` — RR ${m.rrNumber}` : ''));
+      return id;
+    });
+    const id = run();
+    const created = this.listMovements(1000).find((x) => x.id === id);
+    if (!created) throw new Error('Failed to read back movement');
+    return created;
+  }
+
+  listMovements(limit = 200): InvMovement[] {
+    const rows = this.db.prepare(
+      `SELECT mv.*, i.sku, i.name AS item_name, b.bol_number,
+              fl.code AS from_code, tl.code AS to_code
+       FROM inv_movements mv
+       JOIN inv_items i ON i.id = mv.item_id
+       LEFT JOIN bol_documents b ON b.id = mv.bol_id
+       LEFT JOIN inv_locations fl ON fl.id = mv.from_location_id
+       LEFT JOIN inv_locations tl ON tl.id = mv.to_location_id
+       ORDER BY mv.created_at DESC, mv.id DESC LIMIT ?`,
+    ).all(limit) as Record<string, unknown>[];
+    return rows.map((r) => this.rowToMovement(r));
+  }
+
+  private rowToMovement(r: Record<string, unknown>): InvMovement {
+    return { id: r.id as number, type: r.type as InvMovementType, itemId: r.item_id as number, sku: String(r.sku ?? ''), itemName: String(r.item_name ?? ''), quantity: r.quantity as number, fromLocationId: (r.from_location_id as number | null) ?? null, fromLocationCode: (r.from_code as string | null) ?? null, toLocationId: (r.to_location_id as number | null) ?? null, toLocationCode: (r.to_code as string | null) ?? null, bolId: (r.bol_id as number | null) ?? null, bolNumber: (r.bol_number as string | null) ?? null, rrNumber: String(r.rr_number ?? ''), user: String(r.user ?? ''), note: String(r.note ?? ''), createdAt: String(r.created_at ?? '') };
+  }
+
+  listInvHistory(limit = 200): InvHistoryEntry[] {
+    const rows = this.db.prepare(`SELECT * FROM inv_history ORDER BY created_at DESC, id DESC LIMIT ?`).all(limit) as Record<string, unknown>[];
+    return rows.map((r) => ({ id: r.id as number, entityType: String(r.entity_type), entityId: r.entity_id as number, action: String(r.action), detail: String(r.detail ?? ''), createdAt: String(r.created_at ?? '') }));
+  }
+
+  /** Search inventory by SKU / name / customer / project, and by RR number:
+   *  an RR search finds BOL line items with that RR, the BOLs they belong to,
+   *  and every inventory movement linked to those BOLs (or carrying that RR). */
+  searchInventory(query: string): InventorySearchResult {
+    const q = `%${query.trim()}%`;
+    const items = this.listInvItems(query.trim());
+    const bolRows = this.db.prepare(
+      `SELECT DISTINCT b.id AS bol_id, b.bol_number, bi.rr_number FROM bol_items bi
+       JOIN bol_documents b ON b.id = bi.bol_id WHERE bi.rr_number LIKE ? ORDER BY b.bol_number ASC`,
+    ).all(q) as Record<string, unknown>[];
+    const bols = bolRows.map((r) => ({ id: r.bol_id as number, bolNumber: String(r.bol_number), rrNumber: String(r.rr_number ?? '') }));
+    const bolIds = [...new Set(bols.map((b) => b.id))];
+    let movements: InvMovement[] = [];
+    if (bolIds.length) {
+      const placeholders = bolIds.map(() => '?').join(', ');
+      const rows = this.db.prepare(
+        `SELECT mv.*, i.sku, i.name AS item_name, b.bol_number, fl.code AS from_code, tl.code AS to_code
+         FROM inv_movements mv JOIN inv_items i ON i.id = mv.item_id
+         LEFT JOIN bol_documents b ON b.id = mv.bol_id
+         LEFT JOIN inv_locations fl ON fl.id = mv.from_location_id
+         LEFT JOIN inv_locations tl ON tl.id = mv.to_location_id
+         WHERE mv.bol_id IN (${placeholders}) OR mv.rr_number LIKE ?
+         ORDER BY mv.created_at DESC, mv.id DESC`,
+      ).all(...bolIds, q) as Record<string, unknown>[];
+      movements = rows.map((r) => this.rowToMovement(r));
+    } else {
+      const rows = this.db.prepare(
+        `SELECT mv.*, i.sku, i.name AS item_name, b.bol_number, fl.code AS from_code, tl.code AS to_code
+         FROM inv_movements mv JOIN inv_items i ON i.id = mv.item_id
+         LEFT JOIN bol_documents b ON b.id = mv.bol_id
+         LEFT JOIN inv_locations fl ON fl.id = mv.from_location_id
+         LEFT JOIN inv_locations tl ON tl.id = mv.to_location_id
+         WHERE mv.rr_number LIKE ? OR i.sku LIKE ?
+         ORDER BY mv.created_at DESC, mv.id DESC`,
+      ).all(q, q) as Record<string, unknown>[];
+      movements = rows.map((r) => this.rowToMovement(r));
+    }
+    return { items, movements, bols };
+  }
+
   /** Full JSON dump for backup. */
   dumpAll(): Record<string, unknown> {
-    const out: Record<string, unknown> = { exportedAt: new Date().toISOString(), app: 'logistics-studio', version: 1 };
+    const out: Record<string, unknown> = { exportedAt: new Date().toISOString(), app: 'logistics-studio', version: 2 };
     const tables = ['bol_documents', 'bol_items', 'bol_history', 'settings', 'templates',
-      ...Object.keys(CATALOG_TABLES)];
+      ...Object.keys(CATALOG_TABLES), ...INVENTORY_TABLES];
     for (const t of tables) out[t] = this.db.prepare(`SELECT * FROM ${t}`).all();
     return out;
   }
 
-  /** Restore from a JSON dump. Replaces all data. Runs in a transaction. */
+  /** Restore from a JSON dump. Replaces all data. Runs in a transaction.
+   *  Inventory tables are optional so pre-Phase-4 (v1) backups still restore.
+   *  Deletes run child-first and inserts parent-first so FK constraints hold. */
   restoreAll(dump: Record<string, unknown>) {
-    const tables = ['bol_documents', 'bol_items', 'bol_history', 'settings', 'templates',
+    const required = ['bol_documents', 'bol_items', 'bol_history', 'settings', 'templates',
       ...Object.keys(CATALOG_TABLES)];
-    for (const t of tables) {
+    for (const t of required) {
       if (!Array.isArray(dump[t])) throw new Error(`Backup is missing table "${t}"`);
     }
+    const present = (t: string) => Array.isArray(dump[t]);
+    // Parent-first insert order.
+    const insertOrder = ['settings', 'templates', 'warehouses', 'inv_locations', 'inv_items',
+      'inv_pallets', 'inv_boxes', 'bol_documents', 'bol_items', 'bol_history',
+      'inv_stock', 'inv_movements', 'inv_history', ...Object.keys(CATALOG_TABLES)];
     const run = this.db.transaction(() => {
-      for (const t of tables) {
-        this.db.exec(`DELETE FROM ${t}`);
+      for (const t of [...insertOrder].reverse()) {
+        if (present(t)) this.db.exec(`DELETE FROM ${t}`);
+      }
+      for (const t of insertOrder) {
+        if (!present(t)) continue;
         const rows = dump[t] as Record<string, unknown>[];
         for (const row of rows) {
           const cols = Object.keys(row);
+          if (!cols.length) continue;
           const placeholders = cols.map(() => '?').join(', ');
           this.db.prepare(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${placeholders})`)
             .run(...cols.map((c) => row[c] as string | number | null));

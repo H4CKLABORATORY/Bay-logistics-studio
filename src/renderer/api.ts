@@ -2,7 +2,7 @@
 // { ok, data } or { ok, error }; unwrap throws on error so pages can use
 // try/catch with a single error banner.
 import type { Api } from '../main/preload';
-import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord } from '../shared/types';
+import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
 
 declare global {
   interface Window {
@@ -43,4 +43,20 @@ export const api = {
   templatesUpdate: (key: string, patch: Record<string, unknown>) => unwrap<boolean>(window.api.templatesUpdate(key, patch)),
   backupExport: () => unwrap<{ path: string | null }>(window.api.backupExport()),
   backupRestore: () => unwrap<{ restored: boolean }>(window.api.backupRestore()),
+  warehouseList: () => unwrap<Warehouse[]>(window.api.warehouseList()),
+  warehouseCreate: (w: Warehouse) => unwrap<Warehouse>(window.api.warehouseCreate(w)),
+  warehouseUpdateDims: (id: number, w: { widthM: number; depthM: number; heightM: number }) => unwrap<Warehouse>(window.api.warehouseUpdateDims(id, w)),
+  inventoryLocations: (warehouseId?: number) => unwrap<Array<InvLocation & { stockQty: number }>>(window.api.inventoryLocations(warehouseId)),
+  inventoryLocationCreate: (loc: InvLocation) => unwrap<InvLocation>(window.api.inventoryLocationCreate(loc)),
+  inventoryItems: (search = '') => unwrap<InvItem[]>(window.api.inventoryItems(search)),
+  inventoryItemCreate: (it: InvItem) => unwrap<InvItem>(window.api.inventoryItemCreate(it)),
+  inventoryStock: (locationId?: number) => unwrap<InvStockRow[]>(window.api.inventoryStock(locationId)),
+  inventoryMovementCreate: (m: { type: 'entry' | 'exit' | 'move'; itemId: number; quantity: number; fromLocationId?: number | null; toLocationId?: number | null; bolId?: number | null; rrNumber?: string; user?: string; note?: string }) => unwrap<InvMovement>(window.api.inventoryMovementCreate(m)),
+  inventoryMovements: (limit = 200) => unwrap<InvMovement[]>(window.api.inventoryMovements(limit)),
+  inventorySearch: (query: string) => unwrap<InventorySearchResult>(window.api.inventorySearch(query)),
+  inventoryHistory: (limit = 200) => unwrap<InvHistoryEntry[]>(window.api.inventoryHistory(limit)),
+  inventoryPallets: () => unwrap<InvPallet[]>(window.api.inventoryPallets()),
+  inventoryPalletCreate: (code: string, locationId: number | null, x: number, y: number, z: number) => unwrap<InvPallet>(window.api.inventoryPalletCreate(code, locationId, x, y, z)),
+  inventoryBoxes: () => unwrap<InvBox[]>(window.api.inventoryBoxes()),
+  inventoryBoxCreate: (code: string, palletId: number | null, locationId: number | null, x: number, y: number, z: number) => unwrap<InvBox>(window.api.inventoryBoxCreate(code, palletId, locationId, x, y, z)),
 };

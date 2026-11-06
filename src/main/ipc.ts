@@ -4,9 +4,11 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AppSettings, BolDocument, CatalogKind } from '../shared/types';
+import type { AppSettings, BolDocument, CatalogKind, InvItem, InvLocation, Warehouse } from '../shared/types';
 import { allocateBolNumber } from '../shared/bolNumbering';
-import { validateBol, validateCatalogRecord } from '../shared/validation';
+import { validateBol, validateCatalogRecord, validateInvItem, validateLocationCode, validateMovementInput, validateWarehouseDims } from '../shared/validation';
+import { parseLocationCode } from '../shared/inventory';
+import { sanitizeIpcError } from '../shared/errors';
 import { generateBolPdf } from '../shared/pdf';
 import type { Store } from './db';
 import { CATALOG_TABLES } from './db';
@@ -24,11 +26,14 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
 
   ipcMain.handle('settings:get', () => ok(store.getSettings()));
   ipcMain.handle('settings:set', (_e, settings: AppSettings) => {
+    if (!settings || typeof settings !== 'object' || typeof (settings as AppSettings).brandName !== 'string') {
+      return fail('Settings are invalid.');
+    }
     try {
       store.saveSettings(settings);
       return ok(true);
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
 
@@ -52,7 +57,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     try {
       return ok(store.createBol(doc));
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
   ipcMain.handle('bol:update', (_e, id: number, doc: BolDocument) => {
@@ -61,7 +66,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     try {
       return ok(store.updateBol(Number(id), doc));
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
   ipcMain.handle('bol:delete', (_e, id: number) => {
@@ -69,7 +74,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       store.deleteBol(Number(id));
       return ok(true);
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
   ipcMain.handle('bol:duplicate', (_e, id: number) => {
@@ -82,7 +87,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       store.saveSettings(settings);
       return ok(store.duplicateBol(Number(id), bolNumber));
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
   ipcMain.handle('bol:history', (_e, bolId?: number) =>
@@ -110,7 +115,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       fs.writeFileSync(res.filePath, bytes);
       return ok({ saved: true, path: res.filePath, base64: Buffer.from(bytes).toString('base64') });
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
 
@@ -129,7 +134,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       });
       return ok(Buffer.from(bytes).toString('base64'));
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
 
@@ -175,10 +180,9 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
           },
         );
       });
-      store.listHistory(bol.id);
       return ok(true);
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
 
@@ -188,7 +192,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     try {
       return ok(await win.webContents.getPrintersAsync());
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
 
@@ -204,7 +208,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     try {
       return ok(store.createCatalog(kind, rec));
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
   ipcMain.handle('catalog:update', (_e, kind: CatalogKind, id: number, rec: Record<string, unknown>) => {
@@ -215,7 +219,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       store.updateCatalog(kind, Number(id), rec);
       return ok(true);
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
   ipcMain.handle('catalog:delete', (_e, kind: CatalogKind, id: number) => {
@@ -224,19 +228,119 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       store.deleteCatalog(kind, Number(id));
       return ok(true);
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
 
   // ---- Templates ----
   ipcMain.handle('templates:list', () => ok(store.listTemplates()));
   ipcMain.handle('templates:update', (_e, key: string, patch: Record<string, unknown>) => {
+    if (typeof key !== 'string' || !key.trim()) return fail('Template key is required.');
+    if (!patch || typeof patch !== 'object') return fail('Template patch is invalid.');
     try {
       store.updateTemplate(String(key), patch as never);
       return ok(true);
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
+  });
+
+
+  // ---- Warehouses (Phase 5 config) ----
+  ipcMain.handle('warehouse:list', () => {
+    try { return ok(store.listWarehouses()); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('warehouse:create', (_e, w: Warehouse) => {
+    const errors = validateWarehouseDims(w ?? {});
+    if (errors.length) return fail(errors.join(' '));
+    try { return ok(store.createWarehouse(String(w.name).trim(), Number(w.widthM), Number(w.depthM), Number(w.heightM))); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('warehouse:update-dims', (_e, id: number, w: { widthM: number; depthM: number; heightM: number }) => {
+    const errors = validateWarehouseDims({ name: 'x', ...(w ?? {}) });
+    if (errors.length) return fail(errors.join(' '));
+    try { return ok(store.updateWarehouse(Number(id), Number(w.widthM), Number(w.depthM), Number(w.heightM))); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+
+  // ---- Inventory (Phase 4) ----
+  ipcMain.handle('inventory:locations', (_e, warehouseId?: number) => {
+    try { return ok(store.listLocationsWithStock(warehouseId === undefined ? undefined : Number(warehouseId))); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:location-create', (_e, loc: InvLocation) => {
+    const errors = validateLocationCode(loc?.code);
+    if (!loc || !Number.isInteger(loc.warehouseId) || loc.warehouseId <= 0) errors.push('A valid warehouse is required.');
+    const parsed = parseLocationCode(String(loc?.code ?? ''));
+    if (parsed && (parsed.aisle !== loc.aisle || parsed.shelf !== loc.shelf || parsed.position !== loc.position || parsed.zone !== String(loc.zone).toUpperCase())) {
+      errors.push('Location code does not match its zone/aisle/shelf/position.');
+    }
+    for (const k of ['x', 'y', 'z'] as const) {
+      if (typeof loc?.[k] !== 'number' || !Number.isFinite(loc[k])) errors.push(`Location ${k} coordinate must be a number.`);
+    }
+    if (errors.length) return fail(errors.join(' '));
+    try { return ok(store.createLocation(loc)); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:items', (_e, search = '') => {
+    try { return ok(store.listInvItems(String(search ?? ''))); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:item-create', (_e, it: InvItem) => {
+    const errors = validateInvItem(it ?? {});
+    if (errors.length) return fail(errors.join(' '));
+    try {
+      return ok(store.createInvItem({
+        sku: String(it.sku).trim(), name: String(it.name).trim(),
+        description: String(it.description ?? ''), unit: String(it.unit ?? ''), weight: String(it.weight ?? ''),
+        customer: String(it.customer ?? ''), project: String(it.project ?? ''),
+      }));
+    } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:stock', (_e, locationId?: number) => {
+    try { return ok(store.listStock(locationId === undefined ? undefined : Number(locationId))); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:movement-create', (_e, m: Record<string, unknown>) => {
+    const input = {
+      type: m?.type as 'entry' | 'exit' | 'move',
+      itemId: Number(m?.itemId), quantity: Number(m?.quantity),
+      fromLocationId: m?.fromLocationId == null ? null : Number(m.fromLocationId),
+      toLocationId: m?.toLocationId == null ? null : Number(m.toLocationId),
+      bolId: m?.bolId == null ? null : Number(m.bolId),
+      rrNumber: String(m?.rrNumber ?? ''), user: String(m?.user ?? ''), note: String(m?.note ?? ''),
+    };
+    const errors = validateMovementInput(input);
+    if (errors.length) return fail(errors.join(' '));
+    try { return ok(store.recordMovement(input)); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:movements', (_e, limit = 200) => {
+    try { return ok(store.listMovements(Math.min(Math.max(Number(limit) || 200, 1), 1000))); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:search', (_e, query = '') => {
+    if (typeof query !== 'string' || !query.trim()) return fail('Search text is required.');
+    try { return ok(store.searchInventory(query.trim())); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:history', (_e, limit = 200) => {
+    try { return ok(store.listInvHistory(Math.min(Math.max(Number(limit) || 200, 1), 1000))); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:pallets', () => {
+    try { return ok(store.listPallets()); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:pallet-create', (_e, code: string, locationId: number | null, x: number, y: number, z: number) => {
+    if (typeof code !== 'string' || !code.trim()) return fail('Pallet code is required.');
+    if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return fail('Pallet coordinates must be numbers.');
+    try { return ok(store.createPallet(code.trim(), locationId == null ? null : Number(locationId), x, y, z)); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:boxes', () => {
+    try { return ok(store.listBoxes()); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('inventory:box-create', (_e, code: string, palletId: number | null, locationId: number | null, x: number, y: number, z: number) => {
+    if (typeof code !== 'string' || !code.trim()) return fail('Box code is required.');
+    if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return fail('Box coordinates must be numbers.');
+    try { return ok(store.createBox(code.trim(), palletId == null ? null : Number(palletId), locationId == null ? null : Number(locationId), x, y, z)); }
+    catch (err) { return fail(sanitizeIpcError(err)); }
   });
 
   // ---- Backup / restore ----
@@ -246,7 +350,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       const filePath = await exportBackupFile(store, win);
       return ok(filePath ? { path: filePath } : { path: null });
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
   ipcMain.handle('backup:restore', async () => {
@@ -255,7 +359,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       const restored = await importBackupFile(store, win);
       return ok({ restored });
     } catch (err) {
-      return fail(err instanceof Error ? err.message : String(err));
+      return fail(sanitizeIpcError(err));
     }
   });
 }

@@ -101,6 +101,114 @@ export interface AppSettings {
   theme: 'light' | 'dark';
 }
 
+// ---- Inventory (Phase 4) ----
+// NOTE: `items`/`materials` catalog tables already exist; inventory stock
+// items live in `inv_items` so the two do not collide.
+export interface Warehouse {
+  id?: number;
+  name: string;
+  widthM: number;
+  depthM: number;
+  heightM: number;
+  createdAt?: string;
+}
+
+export interface InvLocation {
+  id?: number;
+  warehouseId: number;
+  code: string; // e.g. A-01-02-03 (zone-aisle-shelf-position)
+  zone: string;
+  aisle: number;
+  shelf: number;
+  position: number;
+  x: number; // metres, centre of the slot (3D map)
+  y: number;
+  z: number;
+  capacity: number;
+  createdAt?: string;
+}
+
+export interface InvItem {
+  id?: number;
+  sku: string;
+  name: string;
+  description: string;
+  unit: string;
+  weight: string;
+  customer: string;
+  project: string;
+  createdAt?: string;
+}
+
+export interface InvPallet {
+  id?: number;
+  code: string;
+  locationId: number | null;
+  x: number;
+  y: number;
+  z: number;
+  createdAt?: string;
+}
+
+export interface InvBox {
+  id?: number;
+  code: string;
+  palletId: number | null;
+  locationId: number | null;
+  x: number;
+  y: number;
+  z: number;
+  createdAt?: string;
+}
+
+export interface InvStockRow {
+  id?: number;
+  itemId: number;
+  sku: string;
+  itemName: string;
+  locationId: number;
+  locationCode: string;
+  palletId: number;
+  boxId: number;
+  quantity: number;
+}
+
+export type InvMovementType = 'entry' | 'exit' | 'move';
+
+export interface InvMovement {
+  id?: number;
+  type: InvMovementType;
+  itemId: number;
+  sku?: string;
+  itemName?: string;
+  quantity: number;
+  fromLocationId: number | null;
+  fromLocationCode?: string | null;
+  toLocationId: number | null;
+  toLocationCode?: string | null;
+  bolId: number | null;
+  bolNumber?: string | null;
+  rrNumber: string;
+  user: string;
+  note: string;
+  createdAt?: string;
+}
+
+export interface InvHistoryEntry {
+  id?: number;
+  entityType: string;
+  entityId: number;
+  action: string;
+  detail: string;
+  createdAt?: string;
+}
+
+export interface InventorySearchResult {
+  items: InvItem[];
+  movements: InvMovement[];
+  bols: Array<{ id: number; bolNumber: string; rrNumber: string }>;
+}
+
 export interface BolHistoryEntry {
   id?: number;
   bolId: number;
