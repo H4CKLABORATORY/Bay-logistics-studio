@@ -11,12 +11,20 @@ win:
   target:
     - nsis
     - portable
-  artifactName: ${productName}-${version}-setup.${ext}
 nsis:
+  # artifactName lives here, not under win: — a win-level artifactName would
+  # make the NSIS installer and the portable .exe write the same filename
+  # into release/ and overwrite each other.
+  artifactName: ${productName}-${version}-setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  shortcutName: Logistics Studio
+  uninstallDisplayName: Logistics Studio
+  # User data lives in %APPDATA%\Logistics Studio (app.getPath('userData')),
+  # outside the install dir — uninstalling must never delete the database.
+  deleteAppDataOnUninstall: false
 linux:
   target:
     - AppImage
