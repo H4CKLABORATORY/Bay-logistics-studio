@@ -59,6 +59,7 @@ export default function Settings({ settings, onSaved }: { settings: AppSettings;
           <div><label>Company address</label><input value={s.company.address} onChange={(e) => setS({ ...s, company: { ...s.company, address: e.target.value } })} /></div>
           <div><label>Company phone</label><input value={s.company.phone} onChange={(e) => setS({ ...s, company: { ...s.company, phone: e.target.value } })} /></div>
           <div><label>Company email</label><input value={s.company.email} onChange={(e) => setS({ ...s, company: { ...s.company, email: e.target.value } })} /></div>
+          <div><label>Company website</label><input value={s.company.website ?? ''} onChange={(e) => setS({ ...s, company: { ...s.company, website: e.target.value } })} /></div>
           <div><label>Units</label>
             <select value={s.units} onChange={(e) => setS({ ...s, units: e.target.value as 'imperial' | 'metric' })}>
               <option value="imperial">Imperial (lb)</option>

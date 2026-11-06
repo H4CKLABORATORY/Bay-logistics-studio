@@ -42,6 +42,27 @@ formats, printer, templates, backups, and theme.
   confirmation.
 - **7 base templates**: Warehouse, Delivery, Standard, Return, Transfer,
   Pickup, Custom (configurable, stored in the DB).
+- **Official BOL layout**: PDF export replicates the official Delivery
+  template (`docs/official-bol-template.pdf`) — maroon logo block, header
+  grid, 20-row items table, receiver/driver signatures, and the inspection
+  disclaimer footer. The Warehouse template uses the same layout with
+  FOUND/PICKED/LOADED checkboxes and internal signatures. The company
+  header and SHIP FROM block come from the configurable company settings
+  (default: Bay Crane Mid-Atlantic LLC, 51 Ritchie Road, Capitol Heights,
+  MD 20743, (202) 529-6100, baycrane-ma.com) — change them in Settings and
+  the PDFs change too.
+- **Inventory (Phase 4)**: warehouses, coded locations (`A-01-02-03`),
+  items by unique SKU, pallets, boxes, stock per location, atomic
+  entry/exit/move transactions with insufficient-stock rejection, audit
+  history, and search by SKU / client / project / RR # (an RR search finds
+  the BOL and its BOL-linked movements).
+- **3D warehouse (Phase 5)**: interactive Three.js map built from live
+  database rows — drag to orbit, scroll to zoom, click a shelf slot to see
+  its stock and move it to another location. Guarded: shows a clear error
+  state instead of crashing when WebGL is unavailable.
+- **Security (Phase 6)**: IPC errors are sanitised (no stack traces or SQL
+  leak to the renderer); all SQL parameterized; input validation on every
+  IPC handler.
 
 ## Phase 1 report (Nov 6, 2026)
 
@@ -56,15 +77,20 @@ Real repo state at the start of this work:
 
 Phase 1 delivered `ARCHITECTURE.md` (stack, security, data model, numbering,
 PDF/print, backup, distribution) and this report section. Phases 2–3
-delivered the scaffolded app and the complete BOL workflow; see
-`ARCHITECTURE.md` for details.
+delivered the scaffolded app and the complete BOL workflow. Phases 4–7
+added inventory, the 3D warehouse map, the security audit, and Windows
+distribution (version 0.2.0); see `ARCHITECTURE.md` for details.
 
 ## Distribution
 
 The Windows `.exe` is built by GitHub Actions
 (`.github/workflows/build-windows.yml`, `windows-latest`): install, test,
 build, `electron-builder --win`, artifact upload of `release/`. No `.exe`
-is built or claimed in this Linux environment.
+is built or claimed in this Linux environment. Current version: **0.2.0**.
+
+Still untested (needs a Windows PC / GitHub credentials): the first
+GitHub Actions run that actually produces the `.exe`, the NSIS installer
+smoke test on Windows, and printer tests including NIIMBOT.
 
 ## License
 

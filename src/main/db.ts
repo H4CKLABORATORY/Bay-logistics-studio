@@ -207,7 +207,15 @@ export class Store {
   getSettings(): AppSettings {
     const row = this.db.prepare(`SELECT value FROM settings WHERE key = 'app'`).get() as { value: string } | undefined;
     if (!row) return JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
-    return { ...JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), ...JSON.parse(row.value) };
+    const merged: AppSettings = { ...JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), ...JSON.parse(row.value) };
+    // Company fields left blank fall back to the default company data, so
+    // the PDF header / SHIP FROM block always has company data to show.
+    // Any value the user enters wins over the default.
+    merged.company = { ...DEFAULT_SETTINGS.company, ...(merged.company ?? {}) };
+    for (const k of ['name', 'address', 'phone', 'email', 'website'] as const) {
+      if (!merged.company[k]?.trim()) merged.company[k] = DEFAULT_SETTINGS.company[k] ?? '';
+    }
+    return merged;
   }
   saveSettings(s: AppSettings) {
     this.db.prepare(`INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(s));

@@ -105,6 +105,8 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
         brandName: settings.brandName,
         companyName: settings.company.name,
         companyAddress: settings.company.address,
+        companyPhone: settings.company.phone,
+        companyWebsite: settings.company.website ?? '',
       });
       const win = getWindow();
       const fallback = path.join(require('os').homedir(), 'Downloads', `${bol.bolNumber}.pdf`);
@@ -131,6 +133,8 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
         brandName: settings.brandName,
         companyName: settings.company.name,
         companyAddress: settings.company.address,
+        companyPhone: settings.company.phone,
+        companyWebsite: settings.company.website ?? '',
       });
       return ok(Buffer.from(bytes).toString('base64'));
     } catch (err) {
@@ -152,6 +156,8 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
         brandName: settings.brandName,
         companyName: settings.company.name,
         companyAddress: settings.company.address,
+        companyPhone: settings.company.phone,
+        companyWebsite: settings.company.website ?? '',
       });
       const tmpPath = path.join(require('os').tmpdir(), `${bol.bolNumber}.pdf`);
       fs.writeFileSync(tmpPath, bytes);

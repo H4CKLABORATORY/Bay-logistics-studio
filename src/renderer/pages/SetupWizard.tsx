@@ -53,6 +53,9 @@ export default function SetupWizard({ settings, onDone }: { settings: AppSetting
             <div><label>Phone</label><input value={s.company.phone} onChange={(e) => setS({ ...s, company: { ...s.company, phone: e.target.value } })} /></div>
             <div><label>Email</label><input value={s.company.email} onChange={(e) => setS({ ...s, company: { ...s.company, email: e.target.value } })} /></div>
           </div>
+          <div className="form-row">
+            <div><label>Website</label><input value={s.company.website ?? ''} onChange={(e) => setS({ ...s, company: { ...s.company, website: e.target.value } })} /></div>
+          </div>
         </div>
       )}
 

@@ -92,6 +92,8 @@ export interface AppSettings {
     address: string;
     phone: string;
     email: string;
+    /** Company website, shown in the PDF header / SHIP FROM block. */
+    website?: string;
   };
   units: 'imperial' | 'metric';
   dateFormat: string;
@@ -221,7 +223,16 @@ export interface BolHistoryEntry {
 export const DEFAULT_SETTINGS: AppSettings = {
   setupComplete: false,
   brandName: 'Logistics Studio',
-  company: { name: '', address: '', phone: '', email: '' },
+  // Default company data from the official BOL template
+  // (docs/official-bol-template.pdf). These are editable company settings,
+  // not product branding — changing them changes the PDF header.
+  company: {
+    name: 'Bay Crane Mid-Atlantic LLC',
+    address: '51 Ritchie Road, Capitol Heights, MD 20743',
+    phone: '(202) 529-6100',
+    email: '',
+    website: 'baycrane-ma.com',
+  },
   units: 'imperial',
   dateFormat: 'YYYY-MM-DD',
   numbering: { mode: 'global', prefix: 'BOL-', nextNumber: 1, padLength: 5 },

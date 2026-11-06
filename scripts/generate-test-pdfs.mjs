@@ -37,6 +37,9 @@ const delivery = {
   ...warehouse,
   bolNumber: 'BOL-00043',
   template: 'delivery',
+  // Blank SHIP FROM: the PDF falls back to the default company block
+  // (Bay Crane Mid-Atlantic LLC, 51 Ritchie Road, ...) from settings.
+  shipFrom: '',
   foundBy: '',
   checkedBy: '',
   loadedBy: '',
@@ -52,7 +55,13 @@ for (const [doc, name] of [
   [warehouse, 'warehouse-bol-test.pdf'],
   [delivery, 'delivery-bol-test.pdf'],
 ]) {
-  const bytes = await generateBolPdf(doc, { paperSize: 'Letter', orientation: 'portrait', brandName: 'Logistics Studio' });
+  const bytes = await generateBolPdf(doc, {
+    paperSize: 'Letter', orientation: 'portrait', brandName: 'Logistics Studio',
+    companyName: 'Bay Crane Mid-Atlantic LLC',
+    companyAddress: '51 Ritchie Road, Capitol Heights, MD 20743',
+    companyPhone: '(202) 529-6100',
+    companyWebsite: 'baycrane-ma.com',
+  });
   const outPath = path.join(root, 'docs', name);
   fs.writeFileSync(outPath, bytes);
   const loaded = await PDFDocument.load(bytes);
