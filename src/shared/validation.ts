@@ -1,5 +1,9 @@
 // Field validation for BOL documents. Pure functions — covered by Vitest.
 import type { BolDocument } from './types';
+import { validateInvItem, validateLocationCode, validateMovementInput, validateWarehouseDims } from './inventory';
+
+export { validateInvItem, validateLocationCode, validateMovementInput, validateWarehouseDims };
+export type { InvItemInput, MovementInput, WarehouseDimsInput } from './inventory';
 
 export function validateBol(doc: Partial<BolDocument>): string[] {
   const errors: string[] = [];
