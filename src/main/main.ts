@@ -1,0 +1,60 @@
+import { app, BrowserWindow } from 'electron';
+import path from 'node:path';
+import { Store } from './db';
+import { registerIpc } from './ipc';
+
+let mainWindow: BrowserWindow | null = null;
+let store: Store | null = null;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 860,
+    minWidth: 900,
+    minHeight: 600,
+    title: 'Logistics Studio',
+    webPreferences: {
+      // Security: no Node in the renderer, isolated context, preload-only bridge.
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
+
+  const devUrl = process.env.VITE_DEV_SERVER_URL;
+  if (devUrl) {
+    mainWindow.loadURL(devUrl);
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  }
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+app.whenReady().then(() => {
+  // Data lives in the persistent per-user location, never in the install dir.
+  const userData = app.getPath('userData');
+  store = new Store(path.join(userData, 'logistics-studio.db'));
+  registerIpc(store, () => mainWindow);
+  createWindow();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  try {
+    store?.close();
+  } catch {
+    // ignore close errors on quit
+  }
+});

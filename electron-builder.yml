@@ -1,0 +1,23 @@
+appId: com.logisticsstudio.app
+productName: Logistics Studio
+copyright: Copyright © 2026 Logistics Studio
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - package.json
+win:
+  target:
+    - nsis
+    - portable
+  artifactName: ${productName}-${version}-setup.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+linux:
+  target:
+    - AppImage
+  category: Office
