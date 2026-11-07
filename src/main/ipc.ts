@@ -10,6 +10,11 @@ import { validateBol, validateCatalogRecord, validateInvItem, validateLocationCo
 import { parseLocationCode } from '../shared/inventory';
 import { sanitizeIpcError } from '../shared/errors';
 import { generateBolPdf } from '../shared/pdf';
+import { generateReportPdf } from './reportPdf';
+import {
+  groupBolsByCustomer, groupBolsByPeriod, isValidDateRange, rowsToCsv,
+  summarizeInventory, summarizeMovements,
+} from '../shared/reports';
 import type { Store } from './db';
 import { CATALOG_TABLES } from './db';
 import { exportBackupFile, importBackupFile } from './backup';
@@ -347,6 +352,121 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return fail('Box coordinates must be numbers.');
     try { return ok(store.createBox(code.trim(), palletId == null ? null : Number(palletId), locationId == null ? null : Number(locationId), x, y, z)); }
     catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+
+  // ---- Dashboard + reports (Phase 8) ----
+  ipcMain.handle('dashboard:stats', () => {
+    try { return ok(store.getDashboardStats()); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  const checkRange = (from: unknown, to: unknown): string | null => {
+    if (typeof from !== 'string' || typeof to !== 'string' || !isValidDateRange(from, to)) {
+      return 'Date range is invalid: use YYYY-MM-DD and make sure "from" is on or before "to".';
+    }
+    return null;
+  };
+  ipcMain.handle('reports:bols', (_e, from: string, to: string) => {
+    const bad = checkRange(from, to);
+    if (bad) return fail(bad);
+    try { return ok(store.getReportBols(from, to)); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('reports:movements', (_e, from: string, to: string) => {
+    const bad = checkRange(from, to);
+    if (bad) return fail(bad);
+    try { return ok(store.getReportMovements(from, to)); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  ipcMain.handle('reports:inventory', () => {
+    try { return ok(store.getReportInventory()); } catch (err) { return fail(sanitizeIpcError(err)); }
+  });
+  const saveExportFile = async (
+    defaultName: string, filters: { name: string; extensions: string[] }[], bytes: Uint8Array | string,
+  ) => {
+    const win = getWindow();
+    const fallback = path.join(require('os').homedir(), 'Downloads', defaultName);
+    const res = win
+      ? await dialog.showSaveDialog(win, { defaultPath: fallback, filters })
+      : { canceled: true, filePath: '' };
+    if (res.canceled || !res.filePath) return { saved: false as const };
+    fs.writeFileSync(res.filePath, bytes);
+    return { saved: true as const, path: res.filePath };
+  };
+  ipcMain.handle('reports:export-csv', async (_e, kind: string, from: string, to: string) => {
+    const bad = checkRange(from, to);
+    if (bad) return fail(bad);
+    try {
+      const settings = store.getSettings();
+      const stamp = new Date().toISOString().slice(0, 10);
+      let csv: string;
+      let name: string;
+      if (kind === 'bols') {
+        const rows = store.getReportBols(from, to);
+        const byPeriod = groupBolsByPeriod(rows, 'day');
+        const byCustomer = groupBolsByCustomer(rows);
+        csv = rowsToCsv(['Period', 'BOLs', 'Items', 'Total qty', 'Total weight'],
+          byPeriod.map((r) => [r.period, r.bolCount, r.totalItems, r.totalQty, Number(r.totalWeight.toFixed(2))]))
+          + '\r\n'
+          + rowsToCsv(['Customer', 'BOLs', 'Items', 'Total qty'],
+            byCustomer.map((r) => [r.customer, r.bolCount, r.totalItems, r.totalQty]));
+        name = `logistics-studio-report-bols-${stamp}.csv`;
+      } else if (kind === 'movements') {
+        const summary = summarizeMovements(store.getReportMovements(from, to));
+        csv = rowsToCsv(['SKU', 'Item', 'Entries', 'Entry qty', 'Exits', 'Exit qty', 'Moves', 'Move qty'],
+          summary.map((r) => [r.sku, r.name, r.entries, r.entryQty, r.exits, r.exitQty, r.moves, r.moveQty]));
+        name = `logistics-studio-report-movements-${stamp}.csv`;
+      } else if (kind === 'inventory') {
+        const inv = store.getReportInventory();
+        const summary = summarizeInventory(inv.rows, inv.palletCount, inv.boxCount);
+        csv = rowsToCsv(['SKU', 'Item', 'Total units', 'Locations used'],
+          summary.rows.map((r) => [r.sku, r.name, r.totalQty, r.locationsUsed]))
+          + '\r\n'
+          + rowsToCsv(['Total', '', '', ''], [['TOTAL', '', summary.totalUnits, summary.locationsUsed]]);
+        name = `logistics-studio-report-inventory-${stamp}.csv`;
+      } else {
+        return fail(`Unknown report "${String(kind)}"`);
+      }
+      void settings;
+      return ok(await saveExportFile(name, [{ name: 'CSV', extensions: ['csv'] }], csv));
+    } catch (err) {
+      return fail(sanitizeIpcError(err));
+    }
+  });
+  ipcMain.handle('reports:export-pdf', async (_e, kind: string, from: string, to: string) => {
+    const bad = checkRange(from, to);
+    if (bad) return fail(bad);
+    try {
+      const settings = store.getSettings();
+      const stamp = new Date().toISOString().slice(0, 10);
+      let bytes: Uint8Array;
+      let name: string;
+      if (kind === 'bols') {
+        const rows = store.getReportBols(from, to);
+        const byPeriod = groupBolsByPeriod(rows, 'day');
+        bytes = await generateReportPdf('BOLs by day', `${from} → ${to} · ${rows.length} BOLs`,
+          ['Date', 'BOLs', 'Items', 'Total qty', 'Total weight'],
+          byPeriod.map((r) => [r.period, String(r.bolCount), String(r.totalItems), String(r.totalQty), r.totalWeight.toFixed(1)]),
+          settings.brandName);
+        name = `logistics-studio-report-bols-${stamp}.pdf`;
+      } else if (kind === 'movements') {
+        const summary = summarizeMovements(store.getReportMovements(from, to));
+        bytes = await generateReportPdf('Movements summary', `${from} → ${to}`,
+          ['SKU', 'Item', 'Entries', 'Entry qty', 'Exits', 'Exit qty', 'Moves', 'Move qty'],
+          summary.map((r) => [r.sku, r.name, String(r.entries), String(r.entryQty), String(r.exits), String(r.exitQty), String(r.moves), String(r.moveQty)]),
+          settings.brandName);
+        name = `logistics-studio-report-movements-${stamp}.pdf`;
+      } else if (kind === 'inventory') {
+        const inv = store.getReportInventory();
+        const summary = summarizeInventory(inv.rows, inv.palletCount, inv.boxCount);
+        bytes = await generateReportPdf('Inventory overview', `As of ${stamp} · ${summary.totalUnits} units, ${summary.distinctSkus} SKUs, ${summary.palletCount} pallets, ${summary.boxCount} boxes`,
+          ['SKU', 'Item', 'Total units', 'Locations used'],
+          summary.rows.map((r) => [r.sku, r.name, String(r.totalQty), String(r.locationsUsed)]),
+          settings.brandName);
+        name = `logistics-studio-report-inventory-${stamp}.pdf`;
+      } else {
+        return fail(`Unknown report "${String(kind)}"`);
+      }
+      return ok(await saveExportFile(name, [{ name: 'PDF', extensions: ['pdf'] }], bytes));
+    } catch (err) {
+      return fail(sanitizeIpcError(err));
+    }
   });
 
   // ---- Backup / restore ----

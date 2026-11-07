@@ -220,6 +220,47 @@ export interface BolHistoryEntry {
   createdAt?: string;
 }
 
+// ---- Dashboard (Phase 8) ----
+export interface DashboardActivityEntry {
+  id: number;
+  source: 'bol' | 'inventory';
+  ref: string; // BOL number, or inventory entity type
+  action: string;
+  detail: string;
+  createdAt: string;
+}
+
+export interface DashboardOverCapacityLocation {
+  code: string;
+  capacity: number;
+  stockQty: number;
+}
+
+export interface DashboardZeroStockItem {
+  sku: string;
+  name: string;
+}
+
+export interface DashboardWeeklyBar {
+  week: string; // Monday YYYY-MM-DD
+  label: string; // same as week (Monday date)
+  count: number;
+}
+
+export interface DashboardStats {
+  totalBols: number;
+  bolsToday: number;
+  bolsThisWeek: number;
+  totalStockUnits: number;
+  distinctSkusInStock: number;
+  locationsOccupied: number;
+  locationsTotal: number;
+  overCapacity: DashboardOverCapacityLocation[];
+  zeroStockItems: DashboardZeroStockItem[];
+  weekly: DashboardWeeklyBar[];
+  recentActivity: DashboardActivityEntry[];
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   setupComplete: false,
   brandName: 'Logistics Studio',

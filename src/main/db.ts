@@ -7,7 +7,9 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
-import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvMovementType, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
+import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, DashboardStats, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvMovementType, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
+import { weekStart } from '../shared/reports';
+import type { ReportBolRow, ReportInventoryResult, ReportMovementRow } from '../shared/reports';
 import { DEFAULT_SETTINGS } from '../shared/types';
 import { BASE_TEMPLATES } from '../shared/templates';
 import { DEFAULT_WAREHOUSE_DIMS } from '../shared/warehouse3d';
@@ -694,6 +696,127 @@ export class Store {
     return { items, movements, bols };
   }
 
+  // ---- Dashboard (Phase 8): one aggregated object, SQL-side. ----
+  getDashboardStats(): DashboardStats {
+    const today = new Date().toISOString().slice(0, 10);
+    const weekAgo = new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+    const one = <T>(sql: string, ...args: unknown[]): T =>
+      this.db.prepare(sql).get(...args) as T;
+    const totalBols = one<{ n: number }>(`SELECT COUNT(*) AS n FROM bol_documents`).n;
+    const bolsToday = one<{ n: number }>(`SELECT COUNT(*) AS n FROM bol_documents WHERE date = ?`, today).n;
+    const bolsThisWeek = one<{ n: number }>(`SELECT COUNT(*) AS n FROM bol_documents WHERE date >= ?`, weekAgo).n;
+    const totalStockUnits = one<{ n: number }>(`SELECT COALESCE(SUM(quantity), 0) AS n FROM inv_stock`).n;
+    const distinctSkusInStock = one<{ n: number }>(
+      `SELECT COUNT(DISTINCT item_id) AS n FROM inv_stock WHERE quantity > 0`).n;
+    const locationsOccupied = one<{ n: number }>(
+      `SELECT COUNT(DISTINCT location_id) AS n FROM inv_stock WHERE quantity > 0`).n;
+    const locationsTotal = one<{ n: number }>(`SELECT COUNT(*) AS n FROM inv_locations`).n;
+    const overCapacity = this.db.prepare(
+      `SELECT l.code AS code, l.capacity AS capacity, COALESCE(SUM(s.quantity), 0) AS stockQty
+       FROM inv_locations l LEFT JOIN inv_stock s ON s.location_id = l.id
+       GROUP BY l.id HAVING l.capacity > 0 AND stockQty >= l.capacity ORDER BY l.code ASC`,
+    ).all() as DashboardStats['overCapacity'];
+    const zeroStockItems = this.db.prepare(
+      `SELECT i.sku AS sku, i.name AS name FROM inv_items i
+       LEFT JOIN inv_stock s ON s.item_id = i.id AND s.quantity > 0
+       WHERE s.id IS NULL ORDER BY i.sku ASC`,
+    ).all() as DashboardStats['zeroStockItems'];
+    // Weekly BOL counts for the last 8 weeks (Mondays), zero-filled.
+    const daily = this.db.prepare(
+      `SELECT date, COUNT(*) AS count FROM bol_documents
+       WHERE date >= date('now', '-55 days') GROUP BY date ORDER BY date ASC`,
+    ).all() as { date: string; count: number }[];
+    const byWeek = new Map<string, number>();
+    for (const d of daily) {
+      const w = weekStart(d.date);
+      byWeek.set(w, (byWeek.get(w) ?? 0) + d.count);
+    }
+    const curMonday = weekStart(today);
+    const weekly: DashboardStats['weekly'] = [];
+    for (let i = 7; i >= 0; i--) {
+      const monday = new Date(`${curMonday}T00:00:00Z`);
+      monday.setUTCDate(monday.getUTCDate() - 7 * i);
+      const label = monday.toISOString().slice(0, 10);
+      weekly.push({ week: label, label, count: byWeek.get(label) ?? 0 });
+    }
+    const recentActivity = this.db.prepare(
+      `SELECT id, 'bol' AS source, bol_number AS ref, action, detail, created_at FROM bol_history
+       UNION ALL
+       SELECT id, 'inventory' AS source, entity_type AS ref, action, detail, created_at FROM inv_history
+       ORDER BY created_at DESC, id DESC LIMIT 8`,
+    ).all() as Record<string, unknown>[];
+    return {
+      totalBols, bolsToday, bolsThisWeek, totalStockUnits, distinctSkusInStock,
+      locationsOccupied, locationsTotal, overCapacity, zeroStockItems, weekly,
+      recentActivity: recentActivity.map((r) => ({
+        id: r.id as number,
+        source: r.source as 'bol' | 'inventory',
+        ref: String(r.ref ?? ''),
+        action: String(r.action ?? ''),
+        detail: String(r.detail ?? ''),
+        createdAt: String(r.created_at ?? ''),
+      })),
+    };
+  }
+
+  // ---- Reports (Phase 8): raw rows; grouping/summing lives in
+  // src/shared/reports.ts so it is unit-testable without Electron. ----
+  getReportBols(from: string, to: string): ReportBolRow[] {
+    const rows = this.db.prepare(
+      `SELECT b.id AS id, b.date AS date, COALESCE(c.name, '') AS customerName,
+              COUNT(bi.id) AS itemCount, COALESCE(SUM(bi.quantity), 0) AS totalQty,
+              GROUP_CONCAT(bi.weight) AS weights
+       FROM bol_documents b
+       LEFT JOIN bol_items bi ON bi.bol_id = b.id
+       LEFT JOIN customers c ON c.id = b.customer_id
+       WHERE b.date BETWEEN ? AND ?
+       GROUP BY b.id ORDER BY b.date ASC, b.id ASC`,
+    ).all(from, to) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      id: r.id as number,
+      date: String(r.date),
+      customerName: String(r.customerName ?? ''),
+      itemCount: r.itemCount as number,
+      totalQty: r.totalQty as number,
+      weights: r.weights == null ? [] : String(r.weights).split(','),
+    }));
+  }
+
+  getReportMovements(from: string, to: string): ReportMovementRow[] {
+    const rows = this.db.prepare(
+      `SELECT mv.type AS type, i.sku AS sku, i.name AS name,
+              mv.quantity AS quantity, date(mv.created_at) AS date
+       FROM inv_movements mv JOIN inv_items i ON i.id = mv.item_id
+       WHERE date(mv.created_at) BETWEEN ? AND ?
+       ORDER BY mv.created_at ASC, mv.id ASC`,
+    ).all(from, to) as Record<string, unknown>[];
+    return rows.map((r) => ({
+      type: r.type as ReportMovementRow['type'],
+      sku: String(r.sku),
+      name: String(r.name),
+      quantity: r.quantity as number,
+      date: String(r.date),
+    }));
+  }
+
+  getReportInventory(): ReportInventoryResult {
+    const rows = this.db.prepare(
+      `SELECT i.sku AS sku, i.name AS name, COALESCE(SUM(s.quantity), 0) AS totalQty,
+              COUNT(DISTINCT CASE WHEN s.quantity > 0 THEN s.location_id END) AS locationsUsed
+       FROM inv_items i LEFT JOIN inv_stock s ON s.item_id = i.id
+       GROUP BY i.id ORDER BY i.name ASC`,
+    ).all() as Record<string, unknown>[];
+    const palletCount = (this.db.prepare(`SELECT COUNT(*) AS n FROM inv_pallets`).get() as { n: number }).n;
+    const boxCount = (this.db.prepare(`SELECT COUNT(*) AS n FROM inv_boxes`).get() as { n: number }).n;
+    return {
+      rows: rows.map((r) => ({
+        sku: String(r.sku), name: String(r.name),
+        totalQty: r.totalQty as number, locationsUsed: r.locationsUsed as number,
+      })),
+      palletCount, boxCount,
+    };
+  }
+
   /** Full JSON dump for backup. */
   dumpAll(): Record<string, unknown> {
     const out: Record<string, unknown> = { exportedAt: new Date().toISOString(), app: 'logistics-studio', version: 2 };
@@ -717,6 +840,15 @@ export class Store {
     const insertOrder = ['settings', 'templates', 'warehouses', 'inv_locations', 'inv_items',
       'inv_pallets', 'inv_boxes', 'bol_documents', 'bol_items', 'bol_history',
       'inv_stock', 'inv_movements', 'inv_history', ...Object.keys(CATALOG_TABLES)];
+    // Phase 8: column whitelist from the LIVE schema. Column names in a
+    // backup file are untrusted input — interpolating them into INSERT would
+    // let a crafted backup run arbitrary SQL. Any key that is not a real
+    // column of the target table rejects the whole restore (transaction).
+    const allowed = new Map<string, Set<string>>();
+    for (const t of insertOrder) {
+      const cols = this.db.prepare(`PRAGMA table_info("${t}")`).all() as { name: string }[];
+      allowed.set(t, new Set(cols.map((c) => c.name)));
+    }
     const run = this.db.transaction(() => {
       for (const t of [...insertOrder].reverse()) {
         if (present(t)) this.db.exec(`DELETE FROM ${t}`);
@@ -724,11 +856,21 @@ export class Store {
       for (const t of insertOrder) {
         if (!present(t)) continue;
         const rows = dump[t] as Record<string, unknown>[];
+        const colsAllowed = allowed.get(t)!;
         for (const row of rows) {
+          if (!row || typeof row !== 'object' || Array.isArray(row)) {
+            throw new Error(`Backup rejected: invalid row in table "${t}"`);
+          }
           const cols = Object.keys(row);
+          for (const c of cols) {
+            if (!colsAllowed.has(c)) {
+              throw new Error(`Backup rejected: unknown column "${c}" in table "${t}"`);
+            }
+          }
           if (!cols.length) continue;
           const placeholders = cols.map(() => '?').join(', ');
-          this.db.prepare(`INSERT INTO ${t} (${cols.join(', ')}) VALUES (${placeholders})`)
+          const quoted = cols.map((c) => `"${c}"`).join(', ');
+          this.db.prepare(`INSERT INTO ${t} (${quoted}) VALUES (${placeholders})`)
             .run(...cols.map((c) => row[c] as string | number | null));
         }
       }

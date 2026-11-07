@@ -2,7 +2,8 @@
 // { ok, data } or { ok, error }; unwrap throws on error so pages can use
 // try/catch with a single error banner.
 import type { Api } from '../main/preload';
-import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
+import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, DashboardStats, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
+import type { ReportBolRow, ReportInventoryResult, ReportMovementRow } from '../shared/reports';
 
 declare global {
   interface Window {
@@ -42,6 +43,12 @@ export const api = {
   templatesList: () => unwrap<Record<string, unknown>[]>(window.api.templatesList()),
   templatesUpdate: (key: string, patch: Record<string, unknown>) => unwrap<boolean>(window.api.templatesUpdate(key, patch)),
   backupExport: () => unwrap<{ path: string | null }>(window.api.backupExport()),
+  dashboardStats: () => unwrap<DashboardStats>(window.api.dashboardStats()),
+  reportBols: (from: string, to: string) => unwrap<ReportBolRow[]>(window.api.reportBols(from, to)),
+  reportMovements: (from: string, to: string) => unwrap<ReportMovementRow[]>(window.api.reportMovements(from, to)),
+  reportInventory: () => unwrap<ReportInventoryResult>(window.api.reportInventory()),
+  reportExportCsv: (kind: string, from: string, to: string) => unwrap<{ saved: boolean; path?: string }>(window.api.reportExportCsv(kind, from, to)),
+  reportExportPdf: (kind: string, from: string, to: string) => unwrap<{ saved: boolean; path?: string }>(window.api.reportExportPdf(kind, from, to)),
   backupRestore: () => unwrap<{ restored: boolean }>(window.api.backupRestore()),
   warehouseList: () => unwrap<Warehouse[]>(window.api.warehouseList()),
   warehouseCreate: (w: Warehouse) => unwrap<Warehouse>(window.api.warehouseCreate(w)),

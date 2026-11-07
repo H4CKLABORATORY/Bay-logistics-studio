@@ -24,6 +24,12 @@ const api = {
   templatesList: () => ipcRenderer.invoke('templates:list'),
   templatesUpdate: (key: string, patch: unknown) => ipcRenderer.invoke('templates:update', key, patch),
   backupExport: () => ipcRenderer.invoke('backup:export'),
+  dashboardStats: () => ipcRenderer.invoke('dashboard:stats'),
+  reportBols: (from: string, to: string) => ipcRenderer.invoke('reports:bols', from, to),
+  reportMovements: (from: string, to: string) => ipcRenderer.invoke('reports:movements', from, to),
+  reportInventory: () => ipcRenderer.invoke('reports:inventory'),
+  reportExportCsv: (kind: string, from: string, to: string) => ipcRenderer.invoke('reports:export-csv', kind, from, to),
+  reportExportPdf: (kind: string, from: string, to: string) => ipcRenderer.invoke('reports:export-pdf', kind, from, to),
   backupRestore: () => ipcRenderer.invoke('backup:restore'),
   // Warehouses + inventory (Phases 4-5)
   warehouseList: () => ipcRenderer.invoke('warehouse:list'),
