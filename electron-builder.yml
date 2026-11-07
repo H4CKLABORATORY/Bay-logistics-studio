@@ -8,6 +8,7 @@ files:
   - dist/**
   - package.json
 win:
+  icon: build/icon.ico
   target:
     - nsis
     - portable
@@ -26,6 +27,7 @@ nsis:
   # outside the install dir — uninstalling must never delete the database.
   deleteAppDataOnUninstall: false
 linux:
+  icon: build/icon.png
   target:
     - AppImage
   category: Office

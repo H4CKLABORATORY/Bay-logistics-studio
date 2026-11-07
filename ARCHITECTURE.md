@@ -263,7 +263,7 @@ scripts/         # generate-test-pdfs.mjs (real test PDFs into docs/)
 
 ## Build & distribution (Phase 7)
 
-- Version is **0.2.0** (`package.json`; README matches). `electron-builder.yml`:
+- Version is **0.3.0** (`package.json`; README matches) — 0.2.0 at the end of Phase 7. `electron-builder.yml`:
   NSIS installer + portable, desktop/Start Menu shortcuts, uninstaller,
   `deleteAppDataOnUninstall: false` so uninstalling never deletes the
   database in `%APPDATA%`.
@@ -275,6 +275,46 @@ scripts/         # generate-test-pdfs.mjs (real test PDFs into docs/)
   `npm run dist`). The Windows `.exe` is produced only by GitHub Actions
   on `windows-latest` after a push — it has never been run yet, so no
   `.exe` exists and the NSIS installer has not been smoke-tested on Windows.
+
+## Dashboard & reports (Phase 8)
+
+- Dashboard (`dashboard:stats` IPC): `Store.getDashboardStats()` aggregates
+  in SQL — total / this-week / today BOLs, total stock units, distinct SKUs
+  in stock, locations occupied/total, locations at or over capacity
+  (`SUM(stock) >= capacity`, capacity > 0), items with zero stock (LEFT JOIN
+  with no positive stock row), weekly BOL counts for the last 8 weeks
+  (zero-filled Mondays), and the latest 8 history entries (BOL + inventory
+  UNION, newest first). The renderer never fetches all rows to compute these.
+  The bar chart is plain CSS (`.bars` / `.bar-fill` in `styles.css`); no
+  chart dependency was added.
+- Reports page (`Reports.tsx`, nav entry "Reports"): three reports over a
+  date range (default last 30 days) — BOLs by period (day/week) + by
+  customer, movements summary per SKU (entries/exits/moves + quantities),
+  inventory overview (units per SKU, locations used, pallets/boxes).
+  `Store.getReportBols(from, to)` / `getReportMovements(from, to)` /
+  `getReportInventory()` return raw rows; grouping/summing lives in
+  `src/shared/reports.ts` (pure, unit-tested in `tests/reports.test.ts`).
+  CSV and PDF export go through the main process (save dialog + fs write,
+  `reports:export-csv` / `reports:export-pdf`); the PDF table layout is in
+  `src/main/reportPdf.ts` (pdf-lib, Letter, Helvetica).
+- Backup restore hardening: `Store.restoreAll` now builds a per-table column
+  whitelist from `PRAGMA table_info` on the live schema and throws
+  `Backup rejected: unknown column "<col>" in table "<table>"` for any row
+  key outside it — a crafted backup can no longer inject SQL through column
+  names. v1 backups (no inventory tables) still restore.
+  Tests in `tests/restore.test.ts`: injected extra column, malicious
+  column name, injected inventory column, normal v2 round-trip, v1 compat.
+- App icon: original design (no brand copied) — dark navy (#1c2b3a)
+  rounded square, white stacked-box glyph with a "B", drawn with PIL.
+  `build/icon.png` (512×512) and `build/icon.ico` (256/128/64/48/32/16),
+  wired as `win.icon` / `linux.icon` in `electron-builder.yml`. The default
+  Electron icon is no longer used.
+- Print polish: Settings now has a "Refresh printers" button that calls
+  `printers:list` on demand and surfaces errors; copies / orientation /
+  paper size / margins already came from `settings.print` and print errors
+  already surfaced the sanitised message (verified, unchanged). The NIIMBOT
+  RW403B 4×6 label option stays labelled UNTESTED in the UI — still no
+  driver test has been run.
 
 ## What is intentionally not done here
 
