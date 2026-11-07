@@ -16,6 +16,8 @@ import {
   summarizeInventory, summarizeMovements,
 } from '../shared/reports';
 import type { Store } from './db';
+import { authStatus, createAccount, deleteAccount, listAccounts, login, logout } from './accounts';
+import { getSessionUser, requireSessionUser } from './session';
 import { CATALOG_TABLES } from './db';
 import { exportBackupFile, importBackupFile } from './backup';
 
@@ -29,8 +31,62 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
   const ok = <T>(data: T) => ({ ok: true as const, data });
   const fail = (message: string) => ({ ok: false as const, error: message });
 
-  ipcMain.handle('settings:get', () => ok(store.getSettings()));
-  ipcMain.handle('settings:set', (_e, settings: AppSettings) => {
+  // All IPC channels require a signed-in session, except the ones marked
+  // open: settings:get (brand/theme for the login screen) and the auth
+  // channels themselves. The session lives in main-process memory
+  // (session.ts); the renderer never decides who is logged in.
+  const handle = (
+    channel: string,
+    fn: (...args: any[]) => unknown,
+    opts?: { open?: boolean },
+  ) => {
+    ipcMain.handle(channel, (...args: any[]) => {
+      if (!opts?.open) {
+        try {
+          requireSessionUser();
+        } catch (err) {
+          return fail(sanitizeIpcError(err));
+        }
+      }
+      return fn(...args);
+    });
+  };
+
+  // ---- Accounts (Phase 9) ----
+  handle('auth:status', () => ok(authStatus(store)), { open: true });
+  handle('auth:signup', (_e, username: unknown, password: unknown, role: unknown) => {
+    try {
+      return ok(createAccount(store, String(username ?? ''), String(password ?? ''), role === 'admin' ? 'admin' : 'user'));
+    } catch (err) {
+      return fail(sanitizeIpcError(err));
+    }
+  }, { open: true });
+  handle('auth:login', (_e, username: unknown, password: unknown) => {
+    try {
+      return ok(login(store, String(username ?? ''), String(password ?? '')));
+    } catch (err) {
+      return fail(sanitizeIpcError(err));
+    }
+  }, { open: true });
+  handle('auth:logout', () => { logout(); return ok(true); }, { open: true });
+  handle('auth:users', () => {
+    try {
+      return ok(listAccounts(store));
+    } catch (err) {
+      return fail(sanitizeIpcError(err));
+    }
+  });
+  handle('auth:delete-user', (_e, id: number) => {
+    try {
+      deleteAccount(store, Number(id));
+      return ok(true);
+    } catch (err) {
+      return fail(sanitizeIpcError(err));
+    }
+  });
+
+  handle('settings:get', () => ok(store.getSettings()), { open: true });
+  handle('settings:set', (_e, settings: AppSettings) => {
     if (!settings || typeof settings !== 'object' || typeof (settings as AppSettings).brandName !== 'string') {
       return fail('Settings are invalid.');
     }
@@ -42,12 +98,12 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     }
   });
 
-  ipcMain.handle('bol:list', (_e, search = '') => ok(store.listBols(String(search ?? ''))));
-  ipcMain.handle('bol:get', (_e, id: number) => {
+  handle('bol:list', (_e, search = '') => ok(store.listBols(String(search ?? ''))));
+  handle('bol:get', (_e, id: number) => {
     const bol = store.getBol(Number(id));
     return bol ? ok(bol) : fail(`BOL id ${id} not found`);
   });
-  ipcMain.handle('bol:next-number', () => {
+  handle('bol:next-number', () => {
     const settings = store.getSettings();
     const { bolNumber, nextNumber } = allocateBolNumber(
       store.usedBolNumbers(), settings.numbering.prefix, settings.numbering.nextNumber, settings.numbering.padLength,
@@ -56,33 +112,33 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     store.saveSettings(settings);
     return ok(bolNumber);
   });
-  ipcMain.handle('bol:create', (_e, doc: BolDocument) => {
+  handle('bol:create', (_e, doc: BolDocument) => {
     const errors = validateBol(doc);
     if (errors.length) return fail(errors.join(' '));
     try {
-      return ok(store.createBol(doc));
+      return ok(store.createBol(doc, getSessionUser()?.username ?? ''));
     } catch (err) {
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('bol:update', (_e, id: number, doc: BolDocument) => {
+  handle('bol:update', (_e, id: number, doc: BolDocument) => {
     const errors = validateBol(doc);
     if (errors.length) return fail(errors.join(' '));
     try {
-      return ok(store.updateBol(Number(id), doc));
+      return ok(store.updateBol(Number(id), doc, getSessionUser()?.username ?? ''));
     } catch (err) {
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('bol:delete', (_e, id: number) => {
+  handle('bol:delete', (_e, id: number) => {
     try {
-      store.deleteBol(Number(id));
+      store.deleteBol(Number(id), getSessionUser()?.username ?? '');
       return ok(true);
     } catch (err) {
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('bol:duplicate', (_e, id: number) => {
+  handle('bol:duplicate', (_e, id: number) => {
     try {
       const settings = store.getSettings();
       const { bolNumber, nextNumber } = allocateBolNumber(
@@ -90,15 +146,15 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       );
       settings.numbering.nextNumber = nextNumber;
       store.saveSettings(settings);
-      return ok(store.duplicateBol(Number(id), bolNumber));
+      return ok(store.duplicateBol(Number(id), bolNumber, getSessionUser()?.username ?? ''));
     } catch (err) {
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('bol:history', (_e, bolId?: number) =>
+  handle('bol:history', (_e, bolId?: number) =>
     ok(store.listHistory(bolId === undefined ? undefined : Number(bolId))));
 
-  ipcMain.handle('bol:export-pdf', async (_e, id: number, opts?: { paperSize?: 'Letter' | 'A4'; orientation?: 'portrait' | 'landscape' }) => {
+  handle('bol:export-pdf', async (_e, id: number, opts?: { paperSize?: 'Letter' | 'A4'; orientation?: 'portrait' | 'landscape' }) => {
     const bol = store.getBol(Number(id));
     if (!bol) return fail(`BOL id ${id} not found`);
     const settings = store.getSettings();
@@ -126,7 +182,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     }
   });
 
-  ipcMain.handle('bol:pdf-preview', async (_e, id: number) => {
+  handle('bol:pdf-preview', async (_e, id: number) => {
     const bol = store.getBol(Number(id));
     if (!bol) return fail(`BOL id ${id} not found`);
     const settings = store.getSettings();
@@ -147,7 +203,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     }
   });
 
-  ipcMain.handle('bol:print', async (_e, id: number, opts?: { copies?: number; silent?: boolean; printerName?: string }) => {
+  handle('bol:print', async (_e, id: number, opts?: { copies?: number; silent?: boolean; printerName?: string }) => {
     const bol = store.getBol(Number(id));
     if (!bol) return fail(`BOL id ${id} not found`);
     const settings = store.getSettings();
@@ -197,7 +253,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     }
   });
 
-  ipcMain.handle('printers:list', async () => {
+  handle('printers:list', async () => {
     const win = getWindow();
     if (!win) return ok([]);
     try {
@@ -208,11 +264,11 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
   });
 
   // ---- Catalogs ----
-  ipcMain.handle('catalog:list', (_e, kind: CatalogKind, search = '') => {
+  handle('catalog:list', (_e, kind: CatalogKind, search = '') => {
     if (!isCatalogKind(kind)) return fail(`Unknown catalog "${String(kind)}"`);
     return ok(store.listCatalog(kind, String(search ?? '')));
   });
-  ipcMain.handle('catalog:create', (_e, kind: CatalogKind, rec: Record<string, unknown>) => {
+  handle('catalog:create', (_e, kind: CatalogKind, rec: Record<string, unknown>) => {
     if (!isCatalogKind(kind)) return fail(`Unknown catalog "${String(kind)}"`);
     const errors = validateCatalogRecord(kind, rec);
     if (errors.length) return fail(errors.join(' '));
@@ -222,7 +278,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('catalog:update', (_e, kind: CatalogKind, id: number, rec: Record<string, unknown>) => {
+  handle('catalog:update', (_e, kind: CatalogKind, id: number, rec: Record<string, unknown>) => {
     if (!isCatalogKind(kind)) return fail(`Unknown catalog "${String(kind)}"`);
     const errors = validateCatalogRecord(kind, rec);
     if (errors.length) return fail(errors.join(' '));
@@ -233,7 +289,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('catalog:delete', (_e, kind: CatalogKind, id: number) => {
+  handle('catalog:delete', (_e, kind: CatalogKind, id: number) => {
     if (!isCatalogKind(kind)) return fail(`Unknown catalog "${String(kind)}"`);
     try {
       store.deleteCatalog(kind, Number(id));
@@ -244,8 +300,8 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
   });
 
   // ---- Templates ----
-  ipcMain.handle('templates:list', () => ok(store.listTemplates()));
-  ipcMain.handle('templates:update', (_e, key: string, patch: Record<string, unknown>) => {
+  handle('templates:list', () => ok(store.listTemplates()));
+  handle('templates:update', (_e, key: string, patch: Record<string, unknown>) => {
     if (typeof key !== 'string' || !key.trim()) return fail('Template key is required.');
     if (!patch || typeof patch !== 'object') return fail('Template patch is invalid.');
     try {
@@ -258,16 +314,16 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
 
 
   // ---- Warehouses (Phase 5 config) ----
-  ipcMain.handle('warehouse:list', () => {
+  handle('warehouse:list', () => {
     try { return ok(store.listWarehouses()); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('warehouse:create', (_e, w: Warehouse) => {
+  handle('warehouse:create', (_e, w: Warehouse) => {
     const errors = validateWarehouseDims(w ?? {});
     if (errors.length) return fail(errors.join(' '));
     try { return ok(store.createWarehouse(String(w.name).trim(), Number(w.widthM), Number(w.depthM), Number(w.heightM))); }
     catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('warehouse:update-dims', (_e, id: number, w: { widthM: number; depthM: number; heightM: number }) => {
+  handle('warehouse:update-dims', (_e, id: number, w: { widthM: number; depthM: number; heightM: number }) => {
     const errors = validateWarehouseDims({ name: 'x', ...(w ?? {}) });
     if (errors.length) return fail(errors.join(' '));
     try { return ok(store.updateWarehouse(Number(id), Number(w.widthM), Number(w.depthM), Number(w.heightM))); }
@@ -275,11 +331,11 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
   });
 
   // ---- Inventory (Phase 4) ----
-  ipcMain.handle('inventory:locations', (_e, warehouseId?: number) => {
+  handle('inventory:locations', (_e, warehouseId?: number) => {
     try { return ok(store.listLocationsWithStock(warehouseId === undefined ? undefined : Number(warehouseId))); }
     catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:location-create', (_e, loc: InvLocation) => {
+  handle('inventory:location-create', (_e, loc: InvLocation) => {
     const errors = validateLocationCode(loc?.code);
     if (!loc || !Number.isInteger(loc.warehouseId) || loc.warehouseId <= 0) errors.push('A valid warehouse is required.');
     const parsed = parseLocationCode(String(loc?.code ?? ''));
@@ -290,12 +346,12 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       if (typeof loc?.[k] !== 'number' || !Number.isFinite(loc[k])) errors.push(`Location ${k} coordinate must be a number.`);
     }
     if (errors.length) return fail(errors.join(' '));
-    try { return ok(store.createLocation(loc)); } catch (err) { return fail(sanitizeIpcError(err)); }
+    try { return ok(store.createLocation(loc, getSessionUser()?.username ?? '')); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:items', (_e, search = '') => {
+  handle('inventory:items', (_e, search = '') => {
     try { return ok(store.listInvItems(String(search ?? ''))); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:item-create', (_e, it: InvItem) => {
+  handle('inventory:item-create', (_e, it: InvItem) => {
     const errors = validateInvItem(it ?? {});
     if (errors.length) return fail(errors.join(' '));
     try {
@@ -306,48 +362,48 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       }));
     } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:stock', (_e, locationId?: number) => {
+  handle('inventory:stock', (_e, locationId?: number) => {
     try { return ok(store.listStock(locationId === undefined ? undefined : Number(locationId))); }
     catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:movement-create', (_e, m: Record<string, unknown>) => {
+  handle('inventory:movement-create', (_e, m: Record<string, unknown>) => {
     const input = {
       type: m?.type as 'entry' | 'exit' | 'move',
       itemId: Number(m?.itemId), quantity: Number(m?.quantity),
       fromLocationId: m?.fromLocationId == null ? null : Number(m.fromLocationId),
       toLocationId: m?.toLocationId == null ? null : Number(m.toLocationId),
       bolId: m?.bolId == null ? null : Number(m.bolId),
-      rrNumber: String(m?.rrNumber ?? ''), user: String(m?.user ?? ''), note: String(m?.note ?? ''),
+      rrNumber: String(m?.rrNumber ?? ''), user: getSessionUser()?.username ?? '', note: String(m?.note ?? ''),
     };
     const errors = validateMovementInput(input);
     if (errors.length) return fail(errors.join(' '));
     try { return ok(store.recordMovement(input)); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:movements', (_e, limit = 200) => {
+  handle('inventory:movements', (_e, limit = 200) => {
     try { return ok(store.listMovements(Math.min(Math.max(Number(limit) || 200, 1), 1000))); }
     catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:search', (_e, query = '') => {
+  handle('inventory:search', (_e, query = '') => {
     if (typeof query !== 'string' || !query.trim()) return fail('Search text is required.');
     try { return ok(store.searchInventory(query.trim())); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:history', (_e, limit = 200) => {
+  handle('inventory:history', (_e, limit = 200) => {
     try { return ok(store.listInvHistory(Math.min(Math.max(Number(limit) || 200, 1), 1000))); }
     catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:pallets', () => {
+  handle('inventory:pallets', () => {
     try { return ok(store.listPallets()); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:pallet-create', (_e, code: string, locationId: number | null, x: number, y: number, z: number) => {
+  handle('inventory:pallet-create', (_e, code: string, locationId: number | null, x: number, y: number, z: number) => {
     if (typeof code !== 'string' || !code.trim()) return fail('Pallet code is required.');
     if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return fail('Pallet coordinates must be numbers.');
     try { return ok(store.createPallet(code.trim(), locationId == null ? null : Number(locationId), x, y, z)); }
     catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:boxes', () => {
+  handle('inventory:boxes', () => {
     try { return ok(store.listBoxes()); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('inventory:box-create', (_e, code: string, palletId: number | null, locationId: number | null, x: number, y: number, z: number) => {
+  handle('inventory:box-create', (_e, code: string, palletId: number | null, locationId: number | null, x: number, y: number, z: number) => {
     if (typeof code !== 'string' || !code.trim()) return fail('Box code is required.');
     if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return fail('Box coordinates must be numbers.');
     try { return ok(store.createBox(code.trim(), palletId == null ? null : Number(palletId), locationId == null ? null : Number(locationId), x, y, z)); }
@@ -355,7 +411,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
   });
 
   // ---- Dashboard + reports (Phase 8) ----
-  ipcMain.handle('dashboard:stats', () => {
+  handle('dashboard:stats', () => {
     try { return ok(store.getDashboardStats()); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
   const checkRange = (from: unknown, to: unknown): string | null => {
@@ -364,17 +420,17 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     }
     return null;
   };
-  ipcMain.handle('reports:bols', (_e, from: string, to: string) => {
+  handle('reports:bols', (_e, from: string, to: string) => {
     const bad = checkRange(from, to);
     if (bad) return fail(bad);
     try { return ok(store.getReportBols(from, to)); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('reports:movements', (_e, from: string, to: string) => {
+  handle('reports:movements', (_e, from: string, to: string) => {
     const bad = checkRange(from, to);
     if (bad) return fail(bad);
     try { return ok(store.getReportMovements(from, to)); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
-  ipcMain.handle('reports:inventory', () => {
+  handle('reports:inventory', () => {
     try { return ok(store.getReportInventory()); } catch (err) { return fail(sanitizeIpcError(err)); }
   });
   const saveExportFile = async (
@@ -389,7 +445,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
     fs.writeFileSync(res.filePath, bytes);
     return { saved: true as const, path: res.filePath };
   };
-  ipcMain.handle('reports:export-csv', async (_e, kind: string, from: string, to: string) => {
+  handle('reports:export-csv', async (_e, kind: string, from: string, to: string) => {
     const bad = checkRange(from, to);
     if (bad) return fail(bad);
     try {
@@ -429,7 +485,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('reports:export-pdf', async (_e, kind: string, from: string, to: string) => {
+  handle('reports:export-pdf', async (_e, kind: string, from: string, to: string) => {
     const bad = checkRange(from, to);
     if (bad) return fail(bad);
     try {
@@ -470,7 +526,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
   });
 
   // ---- Backup / restore ----
-  ipcMain.handle('backup:export', async () => {
+  handle('backup:export', async () => {
     const win = getWindow();
     try {
       const filePath = await exportBackupFile(store, win);
@@ -479,7 +535,7 @@ export function registerIpc(store: Store, getWindow: () => BrowserWindow | null)
       return fail(sanitizeIpcError(err));
     }
   });
-  ipcMain.handle('backup:restore', async () => {
+  handle('backup:restore', async () => {
     const win = getWindow();
     try {
       const restored = await importBackupFile(store, win);

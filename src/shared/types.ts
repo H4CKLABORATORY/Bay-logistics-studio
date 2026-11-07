@@ -73,6 +73,29 @@ export interface NumberingSettings {
   perTemplateNext?: Partial<Record<BolTemplateKey, number>>;
 }
 
+// ---- Accounts (Phase 9): local username + password accounts (SQLite). ----
+// Only the bcrypt hash is stored; PublicUser / SessionUser never carry it.
+export type UserRole = 'admin' | 'user';
+
+export interface PublicUser {
+  id?: number;
+  username: string;
+  role: UserRole;
+  createdAt?: string;
+}
+
+/** Logged-in user kept in main-process memory for the app run. */
+export interface SessionUser {
+  id: number;
+  username: string;
+  role: UserRole;
+}
+
+export interface AuthStatus {
+  hasUsers: boolean;
+  user: SessionUser | null;
+}
+
 export interface PrintSettings {
   paperSize: 'Letter' | 'A4';
   orientation: 'portrait' | 'landscape';
@@ -202,6 +225,8 @@ export interface InvHistoryEntry {
   entityId: number;
   action: string;
   detail: string;
+  /** Username of the signed-in user who performed the action ('' for pre-accounts data). */
+  username?: string;
   createdAt?: string;
 }
 
@@ -217,6 +242,8 @@ export interface BolHistoryEntry {
   bolNumber: string;
   action: string;
   detail: string;
+  /** Username of the signed-in user who performed the action ('' for pre-accounts data). */
+  username?: string;
   createdAt?: string;
 }
 
@@ -227,6 +254,8 @@ export interface DashboardActivityEntry {
   ref: string; // BOL number, or inventory entity type
   action: string;
   detail: string;
+  /** Username of the signed-in user who performed the action ('' for pre-accounts data). */
+  username?: string;
   createdAt: string;
 }
 

@@ -2,7 +2,7 @@
 // { ok, data } or { ok, error }; unwrap throws on error so pages can use
 // try/catch with a single error banner.
 import type { Api } from '../main/preload';
-import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, DashboardStats, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
+import type { AppSettings, AuthStatus, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, DashboardStats, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvPallet, InvStockRow, InventorySearchResult, PublicUser, SessionUser, UserRole, Warehouse } from '../shared/types';
 import type { ReportBolRow, ReportInventoryResult, ReportMovementRow } from '../shared/reports';
 
 declare global {
@@ -20,6 +20,12 @@ async function unwrap<T>(p: Promise<IpcResult<T>>): Promise<T> {
 }
 
 export const api = {
+  authStatus: () => unwrap<AuthStatus>(window.api.authStatus()),
+  authSignup: (username: string, password: string, role: UserRole) => unwrap<PublicUser>(window.api.authSignup(username, password, role)),
+  authLogin: (username: string, password: string) => unwrap<SessionUser>(window.api.authLogin(username, password)),
+  authLogout: () => unwrap<boolean>(window.api.authLogout()),
+  authUsers: () => unwrap<PublicUser[]>(window.api.authUsers()),
+  authDeleteUser: (id: number) => unwrap<boolean>(window.api.authDeleteUser(id)),
   settingsGet: () => unwrap<AppSettings>(window.api.settingsGet()),
   settingsSet: (s: AppSettings) => unwrap<boolean>(window.api.settingsSet(s)),
   bolList: (search = '') => unwrap<BolDocument[]>(window.api.bolList(search)),

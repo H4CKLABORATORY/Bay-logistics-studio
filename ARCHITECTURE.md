@@ -213,9 +213,11 @@ scripts/         # generate-test-pdfs.mjs (real test PDFs into docs/)
   stock, movement-create, movements, search, history, pallets, boxes) and
   `warehouse:*`; all validated in `src/shared/inventory.ts` /
   `src/shared/validation.ts` before the Store call. UI: `Inventory.tsx`.
-- Schema version is now `2` (`meta.schema_version`); backups are version 2
-  and include the inventory tables. Restore accepts v1 backups (inventory
-  tables optional) and deletes/inserts child-first/parent-first so FKs hold.
+- Schema version is now `3` (`meta.schema_version`); backups are version 3
+  and include the inventory tables and the `users` table. Restore accepts v1
+  backups (inventory tables optional) and pre-Phase-9 backups without `users`
+  (existing accounts are kept); deletes/inserts run child-first/parent-first
+  so FKs hold.
 
 ## 3D warehouse (Phase 5)
 
@@ -315,6 +317,43 @@ scripts/         # generate-test-pdfs.mjs (real test PDFs into docs/)
   already surfaced the sanitised message (verified, unchanged). The NIIMBOT
   RW403B 4×6 label option stays labelled UNTESTED in the UI — still no
   driver test has been run.
+
+## Accounts (Phase 9)
+
+- Local username + password accounts in SQLite (`users` table: `username`
+  UNIQUE case-insensitively, bcrypt password hash, `role` admin/user,
+  `created_at`). No default password, no hardcoded credentials: on a fresh
+  database the first account created is forced to admin, and later accounts
+  can only be created by a signed-in admin (Settings → Usuarios).
+- Passwords: `bcryptjs` 3.0.3 (BSD-3-Clause, pure JS — no native build, so it
+  works identically in Electron and in plain Node for Vitest) with 10 rounds.
+  Only the hash is stored; the hash leaves the DB only for the login check
+  (`Store.getUserAuth` → `accounts.ts`). Wrong username and wrong password
+  give the same generic error (no account enumeration).
+- Session: in-memory only, in the main process (`src/main/session.ts`).
+  Quitting the app or logging out ends it; nothing session-related is
+  written to disk. Every IPC channel except `settings:get` (brand/theme for
+  the login screen) and the `auth:*` channels requires a signed-in session;
+  the renderer never decides who is logged in.
+- Per-user scope: BOLs and inventory stay shared company data, but every
+  action records the acting user — `bol_history.username` and
+  `inv_history.username` (added by migration, with an upgrade path for
+  pre-Phase-9 databases), `inv_movements.user` (now always the session user;
+  the old free-text name field in the movement form was removed), and the
+  dashboard recent-activity list. History screens show a "By" column.
+- Admin safety: the last admin account cannot be deleted, and an admin
+  cannot delete her own signed-in account.
+- Tests: `tests/accounts.test.ts` (16 tests) covers sign-up, duplicate
+  rejection, wrong-password rejection, login, session handling, admin-only
+  management, audit usernames, backup round-trip and the v0.3.0 upgrade.
+- Dev-environment note: `better-sqlite3` is a native module with one binary
+  per Node ABI — plain Node (Vitest) needs NODE_MODULE_VERSION 127 and
+  Electron 33 needs 130. `npm rebuild better-sqlite3` restores the Node
+  build; `npx electron-rebuild -f -w better-sqlite3` builds the Electron
+  one. `npx electron-builder install-app-deps` (the postinstall) did NOT
+  rebuild it in dexter — it kept the Node prebuild, so the Electron app
+  would not start until `electron-rebuild` was run. The Windows installer
+  build (GitHub Actions) must run the Electron rebuild before packaging.
 
 ## What is intentionally not done here
 

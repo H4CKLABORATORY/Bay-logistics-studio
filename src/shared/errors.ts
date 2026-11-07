@@ -27,6 +27,7 @@ export function sanitizeIpcError(err: unknown): string {
   if (/UNIQUE constraint failed: inv_locations\.code/i.test(msg)) return 'A location with that code already exists.';
   if (/UNIQUE constraint failed: (inv_pallets|inv_boxes)\.code/i.test(msg)) return 'A pallet/box with that code already exists.';
   if (/UNIQUE constraint failed: bol_documents\.bol_number/i.test(msg)) return 'That BOL number is already in use.';
+  if (/UNIQUE constraint failed: users\.username/i.test(msg)) return 'That username is already taken.';
   if (/UNIQUE constraint failed/i.test(msg)) return 'That record already exists (duplicate value).';
   // Check the full raw error (not just the first line): a stack trace hides
   // below a harmless-looking first line.

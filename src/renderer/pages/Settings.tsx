@@ -1,19 +1,57 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { AppSettings } from '../../shared/types';
+import type { AppSettings, PublicUser, SessionUser } from '../../shared/types';
 import { BASE_TEMPLATES } from '../../shared/templates';
 
-export default function Settings({ settings, onSaved }: { settings: AppSettings; onSaved: (s: AppSettings) => void }) {
+export default function Settings({ settings, onSaved, currentUser }: { settings: AppSettings; onSaved: (s: AppSettings) => void; currentUser: SessionUser | null }) {
   const [s, setS] = useState<AppSettings>(settings);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [templates, setTemplates] = useState<Record<string, unknown>[]>([]);
+  const [users, setUsers] = useState<PublicUser[]>([]);
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState<'admin' | 'user'>('user');
   const [printers, setPrinters] = useState<Array<{ name: string; displayName: string; isDefault?: boolean }>>([]);
+
+  const loadUsers = async () => {
+    if (currentUser?.role !== 'admin') return;
+    try {
+      setUsers(await api.authUsers());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   useEffect(() => {
     api.templatesList().then(setTemplates).catch((e) => setError(e instanceof Error ? e.message : String(e)));
     api.printersList().then(setPrinters).catch(() => setPrinters([]));
+    void loadUsers();
   }, []);
+
+  const doCreateUser = async () => {
+    setError(''); setNotice('');
+    try {
+      await api.authSignup(newUsername.trim(), newPassword, newRole);
+      setNotice(`Account "${newUsername.trim()}" created.`);
+      setNewUsername(''); setNewPassword(''); setNewRole('user');
+      await loadUsers();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const doDeleteUser = async (u: PublicUser) => {
+    if (!u.id || !window.confirm(`Delete account "${u.username}"? This cannot be undone.`)) return;
+    setError(''); setNotice('');
+    try {
+      await api.authDeleteUser(u.id);
+      setNotice(`Account "${u.username}" deleted.`);
+      await loadUsers();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const save = async () => {
     try {
@@ -177,6 +215,45 @@ export default function Settings({ settings, onSaved }: { settings: AppSettings;
           <option value="dark">Dark</option>
         </select>
       </div>
+
+      {currentUser?.role === 'admin' ? (
+        <div className="card">
+          <h2>Usuarios</h2>
+          <p className="muted">Solo el administrador puede crear o eliminar cuentas. Los datos (BOLs e inventario) son compartidos por la empresa, pero cada acción queda registrada con el usuario que la hizo.</p>
+          {users.length === 0 ? <p className="muted">No users loaded.</p> : (
+            <table>
+              <thead><tr><th>Usuario</th><th>Rol</th><th>Creado</th><th></th></tr></thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr key={u.id}>
+                    <td><strong>{u.username}</strong>{u.id === currentUser.id ? ' (tú)' : ''}</td>
+                    <td>{u.role === 'admin' ? 'Administrador' : 'Usuario'}</td>
+                    <td>{(u.createdAt ?? '').slice(0, 10)}</td>
+                    <td>{u.id !== currentUser.id && <button className="btn btn-sm danger" onClick={() => void doDeleteUser(u)}>Eliminar</button>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <h3 style={{ marginTop: 16 }}>Crear cuenta</h3>
+          <div className="form-row">
+            <div><label>Nombre de usuario</label><input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} placeholder="p. ej. maria" /></div>
+            <div><label>Contraseña (mínimo 8 caracteres)</label><input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></div>
+            <div><label>Rol</label>
+              <select value={newRole} onChange={(e) => setNewRole(e.target.value as 'admin' | 'user')}>
+                <option value="user">Usuario</option>
+                <option value="admin">Administrador</option>
+              </select>
+            </div>
+          </div>
+          <button className="btn" onClick={() => void doCreateUser()}>Crear cuenta</button>
+        </div>
+      ) : (
+        <div className="card">
+          <h2>Usuarios</h2>
+          <p className="muted">Sesión: <strong>{currentUser?.username}</strong> (Usuario). Solo un administrador puede crear o eliminar cuentas.</p>
+        </div>
+      )}
 
       <button className="btn primary" onClick={save}>Save settings</button>
     </div>

@@ -3,6 +3,13 @@ import { contextBridge, ipcRenderer } from 'electron';
 // Secure IPC surface: only the channels listed here are exposed to the
 // renderer. No Node APIs, no remote module, no direct DB access.
 const api = {
+  // Accounts (Phase 9): local username + password, session in main memory.
+  authStatus: () => ipcRenderer.invoke('auth:status'),
+  authSignup: (username: string, password: string, role: string) => ipcRenderer.invoke('auth:signup', username, password, role),
+  authLogin: (username: string, password: string) => ipcRenderer.invoke('auth:login', username, password),
+  authLogout: () => ipcRenderer.invoke('auth:logout'),
+  authUsers: () => ipcRenderer.invoke('auth:users'),
+  authDeleteUser: (id: number) => ipcRenderer.invoke('auth:delete-user', id),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSet: (s: unknown) => ipcRenderer.invoke('settings:set', s),
   bolList: (search = '') => ipcRenderer.invoke('bol:list', search),

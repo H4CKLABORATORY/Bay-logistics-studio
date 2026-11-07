@@ -4,9 +4,9 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { buildLocationCode, parseLocationCode } from '../../shared/inventory';
-import type { InvItem, InvLocation, InvMovement, InvStockRow, InventorySearchResult } from '../../shared/types';
+import type { InvItem, InvLocation, InvMovement, InvStockRow, InventorySearchResult, SessionUser } from '../../shared/types';
 
-export default function Inventory() {
+export default function Inventory({ currentUser }: { currentUser?: SessionUser | null }) {
   const [items, setItems] = useState<InvItem[]>([]);
   const [locations, setLocations] = useState<Array<InvLocation & { stockQty: number }>>([]);
   const [stock, setStock] = useState<InvStockRow[]>([]);
@@ -25,7 +25,6 @@ export default function Inventory() {
   const [mvTo, setMvTo] = useState('');
   const [mvBolId, setMvBolId] = useState('');
   const [mvRr, setMvRr] = useState('');
-  const [mvUser, setMvUser] = useState('');
 
   // New item form
   const [newSku, setNewSku] = useState('');
@@ -69,7 +68,8 @@ export default function Inventory() {
         fromLocationId: mvFrom ? Number(mvFrom) : null,
         toLocationId: mvTo ? Number(mvTo) : null,
         bolId: mvBolId ? Number(mvBolId) : null,
-        rrNumber: mvRr, user: mvUser,
+        // The server records the signed-in session user; the name is not typed in.
+        rrNumber: mvRr, user: currentUser?.username ?? '',
       });
       setNotice(`Movement recorded (${mvType}).`);
       await load();
@@ -132,7 +132,7 @@ export default function Inventory() {
           )}
           {searchResult.items.map((it) => <p key={it.id}>{it.sku} — {it.name} {it.customer ? `· ${it.customer}` : ''} {it.project ? `· ${it.project}` : ''}</p>)}
           {searchResult.movements.map((m) => (
-            <p key={m.id}>{m.type} {m.quantity} x {m.sku} {m.fromLocationCode ? `from ${m.fromLocationCode}` : ''} {m.toLocationCode ? `to ${m.toLocationCode}` : ''} {m.bolNumber ? `· BOL ${m.bolNumber}` : ''} {m.rrNumber ? `· RR ${m.rrNumber}` : ''}</p>
+            <p key={m.id}>{m.type} {m.quantity} x {m.sku} {m.fromLocationCode ? `from ${m.fromLocationCode}` : ''} {m.toLocationCode ? `to ${m.toLocationCode}` : ''} {m.bolNumber ? `· BOL ${m.bolNumber}` : ''} {m.rrNumber ? `· RR ${m.rrNumber}` : ''} {m.user ? `· by ${m.user}` : ''}</p>
           ))}
           {searchResult.items.length === 0 && searchResult.bols.length === 0 && searchResult.movements.length === 0 && (
             <p className="muted">Nothing found for “{search}”.</p>
@@ -157,7 +157,7 @@ export default function Inventory() {
             </select>
           </div>
           <div><label>Quantity</label><input type="number" min={1} value={mvQty} onChange={(e) => setMvQty(Number(e.target.value))} /></div>
-          <div><label>Your name (optional)</label><input value={mvUser} onChange={(e) => setMvUser(e.target.value)} /></div>
+          <div><label>Registrado como</label><p className="muted" style={{ margin: '6px 0' }}>{currentUser?.username ?? '—'}</p></div>
           {(mvType === 'exit' || mvType === 'move') && (
             <div><label>From location</label>
               <select value={mvFrom} onChange={(e) => setMvFrom(e.target.value)}>
@@ -220,9 +220,9 @@ export default function Inventory() {
 
       <h2>Recent movements</h2>
       {movements.length === 0 ? <p className="muted">No movements yet.</p> : (
-        <table><thead><tr><th>When</th><th>Type</th><th>Item</th><th>Qty</th><th>From</th><th>To</th><th>BOL</th><th>RR</th></tr></thead>
+        <table><thead><tr><th>When</th><th>Type</th><th>Item</th><th>Qty</th><th>From</th><th>To</th><th>BOL</th><th>RR</th><th>By</th></tr></thead>
           <tbody>{movements.map((m) => (
-            <tr key={m.id}><td>{(m.createdAt ?? '').slice(0, 19).replace('T', ' ')}</td><td>{m.type}</td><td>{m.sku} — {m.itemName}</td><td>{m.quantity}</td><td>{m.fromLocationCode ?? '—'}</td><td>{m.toLocationCode ?? '—'}</td><td>{m.bolNumber ?? '—'}</td><td>{m.rrNumber || '—'}</td></tr>
+            <tr key={m.id}><td>{(m.createdAt ?? '').slice(0, 19).replace('T', ' ')}</td><td>{m.type}</td><td>{m.sku} — {m.itemName}</td><td>{m.quantity}</td><td>{m.fromLocationCode ?? '—'}</td><td>{m.toLocationCode ?? '—'}</td><td>{m.bolNumber ?? '—'}</td><td>{m.rrNumber || '—'}</td><td>{m.user || '—'}</td></tr>
           ))}</tbody>
         </table>
       )}

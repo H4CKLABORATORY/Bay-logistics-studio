@@ -74,6 +74,7 @@ formats, printer, templates, backups, and theme.
 - **App icon (Phase 8)**: original navy rounded-square icon with a white
   box glyph (`build/icon.png` 512×512, `build/icon.ico` multi-size),
   wired into the Windows installer and Linux AppImage. No brand logo copied.
+- **Accounts (Phase 9)**: local username + password accounts (SQLite `users` table, bcrypt hashes — never plaintext). First run creates the admin account (no default password); later accounts are created by an admin in Settings → Usuarios. Sign-in is required for the whole app; the session lives in memory for the app run. BOLs and inventory stay shared company data, but every history/audit record shows which user did what.
 - **Backup restore hardening (Phase 8)**: restore validates every column
   against the live schema (PRAGMA whitelist) and rejects backups with
   unknown columns instead of interpolating them into INSERT.
@@ -95,15 +96,16 @@ delivered the scaffolded app and the complete BOL workflow. Phases 4–7
 added inventory, the 3D warehouse map, the security audit, and Windows
 distribution (version 0.2.0). Phase 8 added the dashboard upgrade, the
 reports module (CSV + PDF export), the original app icon, print polish and
-the backup-restore column whitelist (version 0.3.0); see `ARCHITECTURE.md`
-for details.
+the backup-restore column whitelist (version 0.3.0). Phase 9 added local
+username + password accounts with bcrypt hashing, a sign-in gate and
+per-user audit history (version 0.4.0); see `ARCHITECTURE.md` for details.
 
 ## Distribution
 
 The Windows `.exe` is built by GitHub Actions
 (`.github/workflows/build-windows.yml`, `windows-latest`): install, test,
 build, `electron-builder --win`, artifact upload of `release/`. No `.exe`
-is built or claimed in this Linux environment. Current version: **0.3.0**.
+is built or claimed in this Linux environment. Current version: **0.4.0**.
 
 Still untested (needs a Windows PC / GitHub credentials): the first
 GitHub Actions run that actually produces the `.exe`, the NSIS installer

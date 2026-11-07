@@ -101,13 +101,14 @@ export default function Dashboard({ go }: { go: (v: View) => void }) {
             <div className="card"><p className="empty">No activity recorded yet.</p></div>
           ) : (
             <table>
-              <thead><tr><th>When</th><th>Source</th><th>Action</th><th>Detail</th></tr></thead>
+              <thead><tr><th>When</th><th>Source</th><th>Action</th><th>By</th><th>Detail</th></tr></thead>
               <tbody>
                 {stats.recentActivity.map((a) => (
                   <tr key={`${a.source}-${a.id}`}>
                     <td>{a.createdAt.slice(0, 19).replace('T', ' ')}</td>
                     <td><span className="badge">{a.source === 'bol' ? `BOL ${a.ref}` : a.ref}</span></td>
                     <td>{a.action}</td>
+                    <td>{a.username ?? ''}</td>
                     <td>{a.detail}</td>
                   </tr>
                 ))}

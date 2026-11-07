@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "better-sqlite3": "^11.10.0",
     "pdf-lib": "^1.17.1",
     "react": "^18.3.1",
@@ -36,5 +37,5 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
-  "version": "0.3.0"
+  "version": "0.4.0"
 }

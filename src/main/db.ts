@@ -7,7 +7,7 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
-import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, DashboardStats, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvMovementType, InvPallet, InvStockRow, InventorySearchResult, Warehouse } from '../shared/types';
+import type { AppSettings, BolDocument, BolHistoryEntry, CatalogKind, CatalogRecord, DashboardStats, InvBox, InvHistoryEntry, InvItem, InvLocation, InvMovement, InvMovementType, InvPallet, InvStockRow, InventorySearchResult, PublicUser, UserRole, Warehouse } from '../shared/types';
 import { weekStart } from '../shared/reports';
 import type { ReportBolRow, ReportInventoryResult, ReportMovementRow } from '../shared/reports';
 import { DEFAULT_SETTINGS } from '../shared/types';
@@ -73,6 +73,14 @@ export const CATALOG_TABLES: Record<CatalogKind, { columns: string[]; create: st
 const MIGRATIONS = [
   `CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // ---- Accounts (Phase 9): local username + bcrypt password hash. No
+  // plaintext password is ever stored. username is UNIQUE case-insensitively.
+  `CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE TABLE IF NOT EXISTS templates (
     key TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT DEFAULT '',
     fields_json TEXT NOT NULL, has_warehouse_checks INTEGER NOT NULL DEFAULT 0,
@@ -96,7 +104,8 @@ const MIGRATIONS = [
     FOREIGN KEY (bol_id) REFERENCES bol_documents(id) ON DELETE CASCADE)`,
   `CREATE TABLE IF NOT EXISTS bol_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT, bol_id INTEGER NOT NULL, bol_number TEXT NOT NULL,
-    action TEXT NOT NULL, detail TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')))`,
+    action TEXT NOT NULL, detail TEXT DEFAULT '', username TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')))`,
   // ---- Inventory (Phase 4) ----
   `CREATE TABLE IF NOT EXISTS warehouses (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE,
@@ -141,7 +150,8 @@ const MIGRATIONS = [
     FOREIGN KEY (bol_id) REFERENCES bol_documents(id))`,
   `CREATE TABLE IF NOT EXISTS inv_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT, entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL,
-    action TEXT NOT NULL, detail TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now')))`,
+    action TEXT NOT NULL, detail TEXT DEFAULT '', username TEXT NOT NULL DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now')))`,
   `CREATE INDEX IF NOT EXISTS idx_inv_stock_item ON inv_stock(item_id)`,
   `CREATE INDEX IF NOT EXISTS idx_inv_stock_location ON inv_stock(location_id)`,
   `CREATE INDEX IF NOT EXISTS idx_inv_movements_bol ON inv_movements(bol_id)`,
@@ -165,9 +175,21 @@ export class Store {
   private migrate() {
     const run = this.db.transaction(() => {
       for (const sql of MIGRATIONS) this.db.exec(sql);
-      this.db.prepare(`INSERT INTO meta (key, value) VALUES ('schema_version', '2') ON CONFLICT(key) DO UPDATE SET value = '2'`).run();
+      this.db.prepare(`INSERT INTO meta (key, value) VALUES ('schema_version', '3') ON CONFLICT(key) DO UPDATE SET value = '3'`).run();
     });
     run();
+    // Upgrade path: databases created before accounts existed (v0.3.0) gain
+    // the username audit column; CREATE TABLE IF NOT EXISTS above covers
+    // the users table itself on fresh and upgraded databases alike.
+    this.ensureColumn('bol_history', 'username', `username TEXT NOT NULL DEFAULT ''`);
+    this.ensureColumn('inv_history', 'username', `username TEXT NOT NULL DEFAULT ''`);
+  }
+
+  private ensureColumn(table: string, column: string, ddl: string) {
+    const cols = this.db.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE "${table}" ADD COLUMN ${ddl}`);
+    }
   }
 
   private seed() {
@@ -221,6 +243,62 @@ export class Store {
   }
   saveSettings(s: AppSettings) {
     this.db.prepare(`INSERT INTO settings (key, value) VALUES ('app', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(JSON.stringify(s));
+  }
+
+  // ---- Users (Phase 9) ----
+  // Only bcrypt hashes are stored. getUserAuth is the single place the hash
+  // leaves the database, and only to the login check in accounts.ts.
+  countUsers(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM users`).get() as { n: number }).n;
+  }
+
+  createUser(username: string, passwordHash: string, role: UserRole): PublicUser {
+    try {
+      const info = this.db.prepare(
+        `INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)`,
+      ).run(username, passwordHash, role);
+      const created = this.getPublicUser(Number(info.lastInsertRowid));
+      if (!created) throw new Error('Failed to read back created user');
+      return created;
+    } catch (err) {
+      if (err instanceof Error && /UNIQUE constraint failed: users\.username/i.test(err.message)) {
+        throw new Error(`Username "${username}" is already taken.`);
+      }
+      throw err;
+    }
+  }
+
+  getUserAuth(username: string): { id: number; username: string; role: UserRole; passwordHash: string } | null {
+    // username is COLLATE NOCASE, so login is case-insensitive, matching the
+    // UNIQUE constraint (no 'Ana' vs 'ana' duplicates).
+    const row = this.db.prepare(`SELECT * FROM users WHERE username = ?`).get(username) as Record<string, unknown> | undefined;
+    return row
+      ? { id: row.id as number, username: String(row.username), role: row.role as UserRole, passwordHash: String(row.password_hash) }
+      : null;
+  }
+
+  listUsers(): PublicUser[] {
+    const rows = this.db.prepare(`SELECT id, username, role, created_at FROM users ORDER BY username ASC`).all() as Record<string, unknown>[];
+    return rows.map((r) => this.rowToPublicUser(r));
+  }
+
+  private getPublicUser(id: number): PublicUser | null {
+    const row = this.db.prepare(`SELECT id, username, role, created_at FROM users WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+    return row ? this.rowToPublicUser(row) : null;
+  }
+
+  private rowToPublicUser(r: Record<string, unknown>): PublicUser {
+    return { id: r.id as number, username: String(r.username), role: r.role as UserRole, createdAt: String(r.created_at ?? '') };
+  }
+
+  deleteUser(id: number): void {
+    const target = this.getPublicUser(id);
+    if (!target) throw new Error(`User id ${id} not found`);
+    if (target.role === 'admin') {
+      const admins = (this.db.prepare(`SELECT COUNT(*) AS n FROM users WHERE role = 'admin'`).get() as { n: number }).n;
+      if (admins <= 1) throw new Error('Cannot delete the last admin account.');
+    }
+    this.db.prepare(`DELETE FROM users WHERE id = ?`).run(id);
   }
 
   // ---- BOL ----
@@ -283,7 +361,7 @@ export class Store {
     };
   }
 
-  createBol(doc: BolDocument): BolDocument {
+  createBol(doc: BolDocument, actor = ''): BolDocument {
     const now = new Date().toISOString();
     const run = this.db.transaction(() => {
       const info = this.db.prepare(
@@ -301,7 +379,7 @@ export class Store {
       );
       const bolId = Number(info.lastInsertRowid);
       this.insertItems(bolId, doc.items);
-      this.logHistory(bolId, doc.bolNumber, 'created', `BOL ${doc.bolNumber} created (${doc.template}).`);
+      this.logHistory(bolId, doc.bolNumber, 'created', `BOL ${doc.bolNumber} created (${doc.template}).`, actor);
       return bolId;
     });
     const id = run();
@@ -310,7 +388,7 @@ export class Store {
     return created;
   }
 
-  updateBol(id: number, doc: BolDocument): BolDocument {
+  updateBol(id: number, doc: BolDocument, actor = ''): BolDocument {
     const existing = this.getBol(id);
     if (!existing) throw new Error(`BOL id ${id} not found`);
     const now = new Date().toISOString();
@@ -329,7 +407,7 @@ export class Store {
       );
       this.db.prepare(`DELETE FROM bol_items WHERE bol_id = ?`).run(id);
       this.insertItems(id, doc.items);
-      this.logHistory(id, doc.bolNumber, 'updated', `BOL ${doc.bolNumber} updated.`);
+      this.logHistory(id, doc.bolNumber, 'updated', `BOL ${doc.bolNumber} updated.`, actor);
     });
     run();
     const updated = this.getBol(id);
@@ -337,19 +415,19 @@ export class Store {
     return updated;
   }
 
-  deleteBol(id: number) {
+  deleteBol(id: number, actor = '') {
     const existing = this.getBol(id);
     if (!existing) throw new Error(`BOL id ${id} not found`);
     this.db.prepare(`DELETE FROM bol_documents WHERE id = ?`).run(id);
-    this.logHistory(id, existing.bolNumber, 'deleted', `BOL ${existing.bolNumber} deleted.`);
+    this.logHistory(id, existing.bolNumber, 'deleted', `BOL ${existing.bolNumber} deleted.`, actor);
   }
 
-  duplicateBol(id: number, newNumber: string): BolDocument {
+  duplicateBol(id: number, newNumber: string, actor = ''): BolDocument {
     const src = this.getBol(id);
     if (!src) throw new Error(`BOL id ${id} not found`);
     const copy: BolDocument = { ...src, id: undefined, bolNumber: newNumber, items: src.items.map((i) => ({ ...i, id: undefined })) };
-    const created = this.createBol(copy);
-    this.logHistory(created.id!, newNumber, 'duplicated', `Duplicated from ${src.bolNumber}.`);
+    const created = this.createBol(copy, actor);
+    this.logHistory(created.id!, newNumber, 'duplicated', `Duplicated from ${src.bolNumber}.`, actor);
     return created;
   }
 
@@ -364,8 +442,8 @@ export class Store {
     });
   }
 
-  private logHistory(bolId: number, bolNumber: string, action: string, detail: string) {
-    this.db.prepare(`INSERT INTO bol_history (bol_id, bol_number, action, detail) VALUES (?, ?, ?, ?)`).run(bolId, bolNumber, action, detail);
+  private logHistory(bolId: number, bolNumber: string, action: string, detail: string, username = '') {
+    this.db.prepare(`INSERT INTO bol_history (bol_id, bol_number, action, detail, username) VALUES (?, ?, ?, ?, ?)`).run(bolId, bolNumber, action, detail, username);
   }
 
   listHistory(bolId?: number): BolHistoryEntry[] {
@@ -374,7 +452,8 @@ export class Store {
       : this.db.prepare(`SELECT * FROM bol_history ORDER BY created_at DESC, id DESC LIMIT 200`).all()) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: r.id as number, bolId: r.bol_id as number, bolNumber: String(r.bol_number),
-      action: String(r.action), detail: String(r.detail ?? ''), createdAt: String(r.created_at ?? ''),
+      action: String(r.action), detail: String(r.detail ?? ''), username: String(r.username ?? ''),
+      createdAt: String(r.created_at ?? ''),
     }));
   }
 
@@ -490,14 +569,14 @@ export class Store {
     return r ? this.rowToLocation(r) : null;
   }
 
-  createLocation(loc: Omit<InvLocation, 'id' | 'createdAt'>): InvLocation {
+  createLocation(loc: Omit<InvLocation, 'id' | 'createdAt'>, actor = ''): InvLocation {
     const info = this.db.prepare(
       `INSERT INTO inv_locations (warehouse_id, code, zone, aisle, shelf, position, x, y, z, capacity)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(loc.warehouseId, loc.code, loc.zone, loc.aisle, loc.shelf, loc.position, loc.x, loc.y, loc.z, loc.capacity ?? 0);
     const created = this.getLocation(Number(info.lastInsertRowid));
     if (!created) throw new Error('Failed to read back location');
-    this.logInvHistory('location', created.id!, 'created', `Location ${created.code} created.`);
+    this.logInvHistory('location', created.id!, 'created', `Location ${created.code} created.`, actor);
     return created;
   }
 
@@ -581,8 +660,8 @@ export class Store {
     }
   }
 
-  private logInvHistory(entityType: string, entityId: number, action: string, detail: string) {
-    this.db.prepare(`INSERT INTO inv_history (entity_type, entity_id, action, detail) VALUES (?, ?, ?, ?)`).run(entityType, entityId, action, detail);
+  private logInvHistory(entityType: string, entityId: number, action: string, detail: string, username = '') {
+    this.db.prepare(`INSERT INTO inv_history (entity_type, entity_id, action, detail, username) VALUES (?, ?, ?, ?, ?)`).run(entityType, entityId, action, detail, username);
   }
 
   recordMovement(m: { type: InvMovementType; itemId: number; quantity: number; fromLocationId?: number | null; toLocationId?: number | null; bolId?: number | null; rrNumber?: string; user?: string; note?: string }): InvMovement {
@@ -624,7 +703,7 @@ export class Store {
         (m.fromLocationId ? ` from location ${m.fromLocationId}` : '') +
         (m.toLocationId ? ` to location ${m.toLocationId}` : '') +
         (bol ? ` — BOL ${bol.bolNumber}` : '') +
-        (m.rrNumber ? ` — RR ${m.rrNumber}` : ''));
+        (m.rrNumber ? ` — RR ${m.rrNumber}` : ''), m.user ?? '');
       return id;
     });
     const id = run();
@@ -653,7 +732,7 @@ export class Store {
 
   listInvHistory(limit = 200): InvHistoryEntry[] {
     const rows = this.db.prepare(`SELECT * FROM inv_history ORDER BY created_at DESC, id DESC LIMIT ?`).all(limit) as Record<string, unknown>[];
-    return rows.map((r) => ({ id: r.id as number, entityType: String(r.entity_type), entityId: r.entity_id as number, action: String(r.action), detail: String(r.detail ?? ''), createdAt: String(r.created_at ?? '') }));
+    return rows.map((r) => ({ id: r.id as number, entityType: String(r.entity_type), entityId: r.entity_id as number, action: String(r.action), detail: String(r.detail ?? ''), username: String(r.username ?? ''), createdAt: String(r.created_at ?? '') }));
   }
 
   /** Search inventory by SKU / name / customer / project, and by RR number:
@@ -740,9 +819,9 @@ export class Store {
       weekly.push({ week: label, label, count: byWeek.get(label) ?? 0 });
     }
     const recentActivity = this.db.prepare(
-      `SELECT id, 'bol' AS source, bol_number AS ref, action, detail, created_at FROM bol_history
+      `SELECT id, 'bol' AS source, bol_number AS ref, action, detail, username, created_at FROM bol_history
        UNION ALL
-       SELECT id, 'inventory' AS source, entity_type AS ref, action, detail, created_at FROM inv_history
+       SELECT id, 'inventory' AS source, entity_type AS ref, action, detail, username, created_at FROM inv_history
        ORDER BY created_at DESC, id DESC LIMIT 8`,
     ).all() as Record<string, unknown>[];
     return {
@@ -754,6 +833,7 @@ export class Store {
         ref: String(r.ref ?? ''),
         action: String(r.action ?? ''),
         detail: String(r.detail ?? ''),
+        username: String(r.username ?? ''),
         createdAt: String(r.created_at ?? ''),
       })),
     };
@@ -819,8 +899,8 @@ export class Store {
 
   /** Full JSON dump for backup. */
   dumpAll(): Record<string, unknown> {
-    const out: Record<string, unknown> = { exportedAt: new Date().toISOString(), app: 'logistics-studio', version: 2 };
-    const tables = ['bol_documents', 'bol_items', 'bol_history', 'settings', 'templates',
+    const out: Record<string, unknown> = { exportedAt: new Date().toISOString(), app: 'logistics-studio', version: 3 };
+    const tables = ['bol_documents', 'bol_items', 'bol_history', 'settings', 'templates', 'users',
       ...Object.keys(CATALOG_TABLES), ...INVENTORY_TABLES];
     for (const t of tables) out[t] = this.db.prepare(`SELECT * FROM ${t}`).all();
     return out;
@@ -837,7 +917,7 @@ export class Store {
     }
     const present = (t: string) => Array.isArray(dump[t]);
     // Parent-first insert order.
-    const insertOrder = ['settings', 'templates', 'warehouses', 'inv_locations', 'inv_items',
+    const insertOrder = ['settings', 'templates', 'users', 'warehouses', 'inv_locations', 'inv_items',
       'inv_pallets', 'inv_boxes', 'bol_documents', 'bol_items', 'bol_history',
       'inv_stock', 'inv_movements', 'inv_history', ...Object.keys(CATALOG_TABLES)];
     // Phase 8: column whitelist from the LIVE schema. Column names in a

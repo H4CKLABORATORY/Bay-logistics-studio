@@ -165,10 +165,10 @@ export default function BolList({ go }: { go: (v: View) => void }) {
               <p className="muted">No history yet.</p>
             ) : (
               <table>
-                <thead><tr><th>When</th><th>BOL</th><th>Action</th><th>Detail</th></tr></thead>
+                <thead><tr><th>When</th><th>BOL</th><th>Action</th><th>By</th><th>Detail</th></tr></thead>
                 <tbody>
                   {history.map((h) => (
-                    <tr key={h.id}><td>{h.createdAt}</td><td>{h.bolNumber}</td><td>{h.action}</td><td>{h.detail}</td></tr>
+                    <tr key={h.id}><td>{h.createdAt}</td><td>{h.bolNumber}</td><td>{h.action}</td><td>{h.username ?? ''}</td><td>{h.detail}</td></tr>
                   ))}
                 </tbody>
               </table>
