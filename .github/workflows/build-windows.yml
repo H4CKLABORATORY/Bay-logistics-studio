@@ -1,0 +1,54 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches:
+      - feature/logistics-desktop-v1
+  pull_request:
+    branches:
+      - feature/logistics-desktop-v1
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # npm ci runs the postinstall script (electron-builder install-app-deps),
+      # which rebuilds better-sqlite3 for Electron's ABI (NODE_MODULE_VERSION 130).
+      # Vitest runs under plain Node.js 22 (ABI 127), so rebuild the native
+      # module for Node.js before the tests, and back for Electron before packaging.
+      - name: Rebuild native module for Node.js (tests)
+        run: npm rebuild better-sqlite3
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build app
+        run: npm run build
+
+      - name: Rebuild native module for Electron (packaging)
+        run: npx electron-builder install-app-deps
+
+      - name: Build Windows installer (.exe)
+        run: npm run dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: logistics-studio-windows
+          path: release/
+          if-no-files-found: error
