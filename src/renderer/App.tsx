@@ -8,6 +8,7 @@ import Catalogs from './pages/Catalogs';
 import Settings from './pages/Settings';
 import SetupWizard from './pages/SetupWizard';
 import Inventory from './pages/Inventory';
+import Reports from './pages/Reports';
 const Warehouse3D = lazy(() => import('./pages/Warehouse3D'));
 
 export type View =
@@ -17,6 +18,7 @@ export type View =
   | { name: 'bol-edit'; id: number }
   | { name: 'catalogs' }
   | { name: 'inventory' }
+  | { name: 'reports' }
   | { name: 'warehouse3d' }
   | { name: 'settings' };
 
@@ -84,6 +86,7 @@ export default function App() {
         {nav({ name: 'bols' }, 'Bills of Lading')}
         {nav({ name: 'catalogs' }, 'Catalogs')}
         {nav({ name: 'inventory' }, 'Inventory')}
+        {nav({ name: 'reports' }, 'Reports')}
         {nav({ name: 'warehouse3d' }, '3D Warehouse')}
         {nav({ name: 'settings' }, 'Settings')}
         <div className="spacer" />
@@ -102,6 +105,7 @@ export default function App() {
         )}
         {view.name === 'catalogs' && <Catalogs />}
         {view.name === 'inventory' && <Inventory />}
+        {view.name === 'reports' && <Reports />}
         {view.name === 'warehouse3d' && (
           <Suspense fallback={<div className="main"><p className="muted">Loading 3D view…</p></div>}>
             <Warehouse3D />

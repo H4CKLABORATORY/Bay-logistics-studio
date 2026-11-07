@@ -34,6 +34,16 @@ export default function Settings({ settings, onSaved }: { settings: AppSettings;
     }
   };
 
+  const refreshPrinters = async () => {
+    try {
+      const list = await api.printersList();
+      setPrinters(list);
+      setNotice(list.length ? `Found ${list.length} printer${list.length === 1 ? '' : 's'}.` : 'No printers found on this computer.');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const doRestore = async () => {
     if (!window.confirm('Restore replaces ALL data (BOLs, catalogs, settings) with the backup file. Continue?')) return;
     try {
@@ -106,6 +116,7 @@ export default function Settings({ settings, onSaved }: { settings: AppSettings;
               <option value="">System default</option>
               {printers.map((p) => <option key={p.name} value={p.name}>{p.displayName || p.name}</option>)}
             </select>
+            <button className="btn btn-sm" style={{ marginTop: 6 }} onClick={refreshPrinters}>Refresh printers</button>
           </div>
           <div><label>Margins (mm) — top / right / bottom / left</label>
             <div style={{ display: 'flex', gap: 6 }}>
